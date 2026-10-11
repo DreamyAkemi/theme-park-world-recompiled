@@ -13,7 +13,7 @@ import struct
 import sys
 
 import pefile
-from unicorn import (Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE, UC_HOOK_MEM_UNMAPPED,
+from unicorn import (UC_HOOK_INTR, UC_ERR_INSN_INVALID, UC_ERR_EXCEPTION, Uc, UC_ARCH_X86, UC_MODE_32, UC_HOOK_CODE, UC_HOOK_MEM_UNMAPPED,
                      UC_HOOK_MEM_WRITE, UcError, UC_PROT_ALL)
 from unicorn.x86_const import *
 
@@ -77,6 +77,13 @@ class Emu:
         self.modules = {}
         self.trace_all = False
         self.named_maps = {}
+        self.drv = None
+        self.seh = None
+        self.seh_verbose = False
+        self.pending_start = None
+        self.stop_reason = None
+        self.seh_resume = False
+        self.use_ring = False
         self.ring = []
 
     # ---- memory helpers -------------------------------------------------
@@ -147,6 +154,15 @@ class Emu:
         uc.mem_map(STACK_TOP - STACK_SIZE, STACK_SIZE + PAGE, UC_PROT_ALL)
         uc.mem_map(HEAP_BASE, 0x1000, UC_PROT_ALL)
         uc.mem_map(TEB_BASE, 0x2000, UC_PROT_ALL)
+        uc.mem_map(0x7FFE0000, 0x1000, UC_PROT_ALL)
+        ksd = bytearray(0x1000)
+        struct.pack_into('<II', ksd, 0x00, 0x00123456, 0x0FA00000)   # TickCount, multiplier
+        struct.pack_into('<III', ksd, 0x08, 0x00123456 * 10000 & 0xFFFFFFFF, 0, 0)  # InterruptTime
+        struct.pack_into('<III', ksd, 0x14, 0xB6D3C000, 0x01C5ED5F, 0x01C5ED5F)   # SystemTime
+        struct.pack_into('<I', ksd, 0x26C, 5)    # NtMajorVersion
+        struct.pack_into('<I', ksd, 0x270, 0)    # NtMinorVersion
+        struct.pack_into('<I', ksd, 0x260, 2195) # NtBuildNumber
+        uc.mem_write(0x7FFE0000, bytes(ksd))
         # TEB: SEH chain @0, stack base @4, limit @8, self @0x18, PEB @0x30
         self.w32(TEB_BASE + 0x00, 0xFFFFFFFF)
         self.w32(TEB_BASE + 0x04, STACK_TOP)
@@ -164,9 +180,11 @@ class Emu:
         uc.reg_write(UC_X86_REG_ESP, STACK_TOP - 0x100)
         uc.reg_write(UC_X86_REG_EBP, 0)
         self.setup_modules()
+        uc.hook_add(UC_HOOK_INTR, self.on_intr)
         uc.hook_add(UC_HOOK_CODE, self.on_code, begin=THUNK_BASE, end=THUNK_BASE + 0x100000)
         uc.hook_add(UC_HOOK_MEM_UNMAPPED, self.on_unmapped)
-        uc.hook_add(UC_HOOK_CODE, self.on_ring, begin=0, end=0x7EFFFFFF)
+        if self.use_ring:
+            uc.hook_add(UC_HOOK_CODE, self.on_ring, begin=0, end=0x7EFFFFFF)
 
     def setup_fs(self):
         uc = self.uc
@@ -222,6 +240,8 @@ class Emu:
         else:
             rv = 0
             print('[stub] %s!%s%s -> 0' % (dll, name, tuple(hex(a) for a in args)))
+        if rv == 'JUMPED':
+            return
         if rv is None:
             rv = 0
         uc.reg_write(UC_X86_REG_EAX, rv & 0xFFFFFFFF)
@@ -235,7 +255,7 @@ class Emu:
 
     # ---- API implementations (just enough to start the loader) -----------
     def api_GetVersion(self):
-        return 0x0A280105  # Windows XP 5.1 build 2600
+        return 0x08930005  # Windows 2000 5.0 build 2195
 
     def api_GetCommandLineA(self):
         return self.cmdline
@@ -476,6 +496,25 @@ class Emu:
     def api_UnmapViewOfFile(self, p):
         return 1
 
+    def api_DeviceIoControl(self, h, code, inb, insz, outb, outsz, pret, ov):
+        obj = self.handles.get(h)
+        if not obj or obj[0] != 'secdrv':
+            return 0
+        data = bytes(self.uc.mem_read(inb, insz)) if insz else b''
+        res = self.drv.dispatch(14, code, data, outsz)
+        if res is None:
+            print('[ioctl] %#x in=%s -> driver error' % (code, data.hex()))
+            return 0
+        st, status, info, out = res
+        self.ioctl_count = getattr(self, 'ioctl_count', 0) + 1
+        if not self.quiet or self.ioctl_count <= 2:
+            print('[ioctl #%d] code=%#x in(%d)=%s -> status=%#x info=%d out=%s' % (self.ioctl_count, code, insz, data[:32].hex(), status, info, out[:32].hex()))
+        if outb and out:
+            self.uc.mem_write(outb, out[:outsz])
+        if pret:
+            self.w32(pret, info)
+        return 1 if status < 0x80000000 else 0
+
     def api_CloseHandle(self, h):
         return 1
 
@@ -515,7 +554,9 @@ class Emu:
         hp = self.host_path(n)
         self.log('CreateFileA(%r, access=%#x, disp=%d)' % (n, access, disp))
         if n.startswith('\\\\.\\'):
-            return 0xFFFFFFFF  # device (SecDrv etc.)
+            if n.lower().endswith('secdrv') and self.drv is not None:
+                return self.new_handle(['secdrv'])
+            return 0xFFFFFFFF  # other devices (SoftICE etc.): absent
         if hp and os.path.isfile(hp):
             with open(hp, 'rb') as f:
                 data = f.read()
@@ -559,7 +600,7 @@ class Emu:
 
     def api_GetVersionExA(self, p):
         # OSVERSIONINFOA: XP SP2
-        self.uc.mem_write(p + 4, struct.pack('<IIII', 5, 1, 2600, 2) + b'Service Pack 2\0')
+        self.uc.mem_write(p + 4, struct.pack('<IIII', 5, 0, 2195, 2) + b'Service Pack 4\0')
         return 1
 
     def api_RegOpenKeyExA(self, *a):
@@ -786,6 +827,82 @@ class Emu:
         self.uc.mem_write(buf, txt.encode('latin1') + b'\0')
         return len(txt)
 
+    # ---- Windows-style structured exception dispatch ----------------------
+    CTX_REGS = (('edi', UC_X86_REG_EDI, 0x9C), ('esi', UC_X86_REG_ESI, 0xA0), ('ebx', UC_X86_REG_EBX, 0xA4),
+                ('edx', UC_X86_REG_EDX, 0xA8), ('ecx', UC_X86_REG_ECX, 0xAC), ('eax', UC_X86_REG_EAX, 0xB0),
+                ('ebp', UC_X86_REG_EBP, 0xB4), ('eip', UC_X86_REG_EIP, 0xB8), ('eflags', UC_X86_REG_EFLAGS, 0xC0),
+                ('esp', UC_X86_REG_ESP, 0xC4))
+
+    def deliver_exception(self, code, ctx_eip):
+        uc = self.uc
+        if self.seh_verbose:
+            print('[seh] exception %#x, resume eip %#x' % (code, ctx_eip))
+        rec = self.alloc(0x60)
+        ctx = self.alloc(0x300)
+        self.w32(rec, code)
+        self.w32(rec + 0x0C, ctx_eip)
+        for _, reg, off in self.CTX_REGS:
+            self.w32(ctx + off, uc.reg_read(reg))
+        self.w32(ctx + 0xB8, ctx_eip)
+        self.w32(ctx, 0x1007F)                  # CONTEXT_FULL | DEBUG | FP
+        self.seh = dict(rec=rec, ctx=ctx, frame=self.r32(TEB_BASE))
+        return self.seh_next_frame()
+
+    def on_intr(self, uc, intno, _):
+        eip = uc.reg_read(UC_X86_REG_EIP)
+        code = {1: 0x80000004, 3: 0x80000003, 0: 0xC0000094, 6: 0xC000001D}.get(intno, 0xC0000005)
+        if not self.deliver_exception(code, eip):
+            self.stop_reason = 'unhandled exception %#x at %#x' % (code, eip)
+            uc.emu_stop()
+            return
+        self.pending_start = uc.reg_read(UC_X86_REG_EIP)
+        uc.emu_stop()
+
+    def seh_next_frame(self):
+        uc = self.uc
+        st = self.seh
+        frame = st['frame']
+        if frame in (0xFFFFFFFF, 0) :
+            print('[seh] unhandled exception; no more handlers')
+            return False
+        handler = self.r32(frame + 4)
+        st['cur'] = frame
+        if self.seh_verbose:
+            print('[seh] -> handler %#x (frame %#x)' % (handler, frame))
+        esp = uc.reg_read(UC_X86_REG_ESP) - 0x40
+        disp = self.alloc(0x40)
+        for a in (disp, st['ctx'], frame, st['rec']):
+            esp -= 4
+            self.w32(esp, a)
+        esp -= 4
+        self.w32(esp, self.make_thunk('seh', 'SEH_RETURN'))
+        uc.reg_write(UC_X86_REG_ESP, esp)
+        uc.reg_write(UC_X86_REG_EIP, handler)
+        return True
+
+    def api_SEH_RETURN(self):
+        uc = self.uc
+        st = self.seh
+        disp = uc.reg_read(UC_X86_REG_EAX)
+        if self.seh_verbose:
+            print('[seh] handler returned %d' % disp)
+        if disp == 0:   # ExceptionContinueExecution
+            for _, reg, off in self.CTX_REGS:
+                uc.reg_write(reg, self.r32(st['ctx'] + off))
+            uc.reg_write(UC_X86_REG_EIP, self.r32(st['ctx'] + 0xB8))
+            self.seh_resume = True
+            return 'JUMPED'
+        st['frame'] = self.r32(st['cur'])
+        if not self.seh_next_frame():
+            uc.emu_stop()
+        return 'JUMPED'
+
+    def api_RtlUnwind(self, target, ip, rec, retval):
+        # Unwind to the target frame: unlink SEH chain to it; execution resumes at ip if given.
+        self.log('RtlUnwind(target=%#x, ip=%#x)' % (target, ip))
+        self.w32(TEB_BASE, target)
+        return 0
+
     def api_ExitProcess(self, code):
         print('[ExitProcess(%d)] after %d API calls' % (code, self.calls))
         self.uc.emu_stop()
@@ -797,12 +914,28 @@ class Emu:
         # return address for the entry point -> fake ExitProcess thunk
         self.uc.reg_write(UC_X86_REG_ESP, self.uc.reg_read(UC_X86_REG_ESP) - 4)
         self.w32(self.uc.reg_read(UC_X86_REG_ESP), self.make_thunk('kernel32.dll', 'ExitProcess'))
-        try:
-            self.uc.emu_start(ep, 0, count=max_insn)
-        except UcError as e:
-            eip = self.uc.reg_read(UC_X86_REG_EIP)
-            print('[!] emulation stopped:', e, 'eip=%#x' % eip, self.thunks.get(eip))
-            print('    esp=%#x ' % self.uc.reg_read(UC_X86_REG_ESP) + ' '.join('%s=%#x' % (n, self.uc.reg_read(r)) for n, r in (('eax', UC_X86_REG_EAX), ('ebx', UC_X86_REG_EBX), ('ecx', UC_X86_REG_ECX), ('edx', UC_X86_REG_EDX), ('esi', UC_X86_REG_ESI), ('edi', UC_X86_REG_EDI), ('ebp', UC_X86_REG_EBP))))
+        start, remaining = ep, max_insn
+        while True:
+            try:
+                self.uc.emu_start(start, 0, count=remaining)
+                if self.pending_start is not None:
+                    start, self.pending_start = self.pending_start, None
+                    continue
+                break
+            except UcError as e:
+                eip = self.uc.reg_read(UC_X86_REG_EIP)
+                if e.errno == UC_ERR_INSN_INVALID and self.deliver_exception(0xC000001D, eip):
+                    start = self.uc.reg_read(UC_X86_REG_EIP)
+                    continue
+                print('[!] emulation stopped:', e, 'eip=%#x' % eip, self.thunks.get(eip))
+                print('    esp=%#x ' % self.uc.reg_read(UC_X86_REG_ESP) + ' '.join(
+                    '%s=%#x' % (n, self.uc.reg_read(r)) for n, r in (
+                        ('eax', UC_X86_REG_EAX), ('ebx', UC_X86_REG_EBX), ('ecx', UC_X86_REG_ECX),
+                        ('edx', UC_X86_REG_EDX), ('esi', UC_X86_REG_ESI), ('edi', UC_X86_REG_EDI),
+                        ('ebp', UC_X86_REG_EBP))))
+                break
+        if self.stop_reason:
+            print('[!]', self.stop_reason)
 
 
 def main():
@@ -811,9 +944,19 @@ def main():
     ap.add_argument('--max-insn', type=int, default=5_000_000)
     ap.add_argument('--quiet', action='store_true')
     ap.add_argument('--trace', action='store_true')
+    ap.add_argument('--seh', action='store_true', help='log SEH dispatch')
+    ap.add_argument('--ring', action='store_true', help='keep last-instruction ring buffer (slow)')
+    ap.add_argument('--secdrv', action='store_true', help='answer \\\\.\\Secdrv with the real driver, emulated')
     a = ap.parse_args()
     e = Emu(a.game_dir, a.quiet)
     e.trace_all = a.trace
+    e.use_ring = a.ring
+    e.seh_verbose = a.seh
+    if a.secdrv:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from secdrv_host import DriverHost
+        e.drv = DriverHost(os.path.join(a.game_dir, 'secdrv.sys'), verbose=a.trace)
+        print('secdrv DriverEntry ->', hex(e.drv.driver_entry() or 0))
     e.setup()
     e.run(a.max_insn)
     print('API calls: %d, EIP=%#x' % (e.calls, e.uc.reg_read(UC_X86_REG_EIP)))

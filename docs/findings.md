@@ -145,3 +145,9 @@ Resolution.sam is read as an index into a table (selector around 0x44a03f): 1=51
 4=1024x768, 5=1280x1024, 6=1600x1200, 7=2048x1536. Width/height are stored at 0x7a1968/0x7a1930 from immediates;
 index 7 sits at 0x44a0ed (two `c7 05 addr imm32`). ddraw.dll rewrites those immediates from ddraw.ini width/height.
 UI art is picked by width bucket (function ~0x41a5a0: <=512, <=640, <=800, else the largest set).
+
+## GPU presentation (gpu.cpp)
+ddraw.dll presents through Direct3D 11 (loaded dynamically; WARP/hardware; falls back to GDI on any failure): pass 1 scales
+the converted 32-bit frame with nearest/bilinear/sharp-bilinear into an intermediate target, pass 2 runs FXAA 3.11, a
+progressive deband (average widens while neighbours stay within one 16-bit colour step) with 1 LSB dither, and optional
+unsharp sharpening. Verified under Wine (test suite passes; visual test shows smoothed edges and banding removed).

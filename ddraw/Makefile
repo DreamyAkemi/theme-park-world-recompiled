@@ -4,8 +4,8 @@ FLAGS = -O2 -std=c++17 -Wall -Wno-unused-function
 
 all: ddraw.dll test_ddraw.exe
 
-ddraw.dll: ddraw.cpp ddraw.def
-	$(MINGW_CXX) $(FLAGS) -shared -static -static-libgcc -static-libstdc++ -s -o $@ ddraw.cpp ddraw.def -ldxguid -luuid -lgdi32 -luser32 -Wl,--kill-at,--enable-stdcall-fixup
+ddraw.dll: ddraw.cpp gpu.cpp ddraw.def
+	$(MINGW_CXX) $(FLAGS) -shared -static -static-libgcc -static-libstdc++ -s -o $@ ddraw.cpp gpu.cpp ddraw.def -ldxguid -luuid -lgdi32 -luser32 -Wl,--kill-at,--enable-stdcall-fixup
 
 test_ddraw.exe: test_ddraw.cpp
 	$(MINGW_CXX) $(FLAGS) -static -o $@ test_ddraw.cpp -ldinput -ldxguid -luuid -lgdi32 -luser32

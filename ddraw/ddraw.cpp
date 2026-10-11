@@ -28,9 +28,10 @@
 #include <stddef.h>
 #include <vector>
 #include <algorithm>
+#include "gpu.h"
 
 /* ------------------------------------------------------------------ config + log */
-static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0, mouse_shared = 1, synth_mouse = 1, force_w = 0, force_h = 0, from_w = 0, from_h = 0, width = 0, height = 0, ui_width = 0; } cfg;
+static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0, mouse_shared = 1, synth_mouse = 1, force_w = 0, force_h = 0, from_w = 0, from_h = 0, width = 0, height = 0, ui_width = 0, gpu = 1, aa = 1, deband = 1, sharpen = 0, vsync = 0; } cfg;
 static HCURSOR g_gamecursor;
 static FILE *logf;
 static CRITICAL_SECTION cs;
@@ -58,6 +59,8 @@ static void load_cfg() {
     cfg.mouse_shared = GetPrivateProfileIntA("ddraw", "shared_mouse", 1, p);
     cfg.synth_mouse = GetPrivateProfileIntA("ddraw", "synth_mouse", 1, p);
     cfg.width = GetPrivateProfileIntA("ddraw", "width", 0, p); cfg.height = GetPrivateProfileIntA("ddraw", "height", 0, p);
+    cfg.gpu = GetPrivateProfileIntA("ddraw", "gpu", 1, p); cfg.aa = GetPrivateProfileIntA("ddraw", "aa", 1, p); cfg.deband = GetPrivateProfileIntA("ddraw", "deband", 1, p);
+    cfg.sharpen = GetPrivateProfileIntA("ddraw", "sharpen", 0, p); cfg.vsync = GetPrivateProfileIntA("ddraw", "vsync", 0, p);
     cfg.ui_width = GetPrivateProfileIntA("ddraw", "ui_width", 0, p);
     cfg.force_w = GetPrivateProfileIntA("ddraw", "force_width", 0, p); cfg.force_h = GetPrivateProfileIntA("ddraw", "force_height", 0, p);
     cfg.from_w = GetPrivateProfileIntA("ddraw", "force_from_width", 0, p); cfg.from_h = GetPrivateProfileIntA("ddraw", "force_from_height", 0, p);
@@ -525,6 +528,14 @@ static void present(const char *why) {
     if (cfg.log) {   /* diagnostic: a frame that is (almost) entirely white */
         int white = 0, total = 0; for (int sy = 0; sy < 8; sy++) for (int sx = 0; sx < 8; sx++) { DWORD v = buf[(size_t)((sy * 2 + 1) * H / 16) * W + (sx * 2 + 1) * W / 16]; total++; if (((v >> 16) & 255) > 235 && ((v >> 8) & 255) > 235 && (v & 255) > 235) white++; }
         static int nw, nf; nf++; if (white * 10 >= total * 9) { nw++; if (nw <= 40) LOG("WHITE FRAME #%d (frame %d) shown by %s; last operation: %s", nw, nf, why, g_lastop); }
+    }
+    if (cfg.gpu && !gpu_failed()) {
+        RECT gcr; (o_GetClientRect ? o_GetClientRect : GetClientRect)(G.hwnd, &gcr);
+        g_client_w = gcr.right; g_client_h = gcr.bottom;
+        RECT gd; dest_rect(gcr.right, gcr.bottom, W, H, &gd);
+        GpuOptions go; go.filter = cfg.filter; go.aa = cfg.aa; go.deband = cfg.deband; go.sharpen = cfg.sharpen; go.vsync = cfg.vsync;
+        if (gcr.right < 16 || gcr.bottom < 16) { G.dirty = false; return; }
+        if (gpu_present(G.hwnd, buf.data(), W, H, gcr.right, gcr.bottom, gd, go, (GpuLogFn)LOG)) { G.dirty = false; return; }
     }
     BITMAPINFO bi; memset(&bi, 0, sizeof bi);
     bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = W; bi.bmiHeader.biHeight = -H; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;

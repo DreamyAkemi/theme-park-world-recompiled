@@ -29,3 +29,8 @@ Needs `i686-w64-mingw32-gcc`, `i686-w64-mingw32-g++` and `python3`:
     make -C patcher
 
 Game files (`*.exe`, `*.dll`, data) are never committed; see `.gitignore`.
+
+## Status (latest)
+- Patched game (Feb 2000 patch exe + data) runs natively on Windows 11 through our own `ddraw.dll` (no third-party wrappers).
+- True 16:9 works: set `width`/`height` in `ddraw.ini` (e.g. 1920x1080) and `Resolution.sam` to `7`. The HUD anchors to the screen corners and the mouse tracks correctly in menus and parks (tested at 1920x1080).
+- Not done yet: menu layout is still stretched at 16:9, upscaled textures, packaging into a one-step patcher for the patched exe.

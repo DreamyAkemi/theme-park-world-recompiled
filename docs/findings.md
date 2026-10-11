@@ -90,3 +90,7 @@ Game files are never committed (see .gitignore).
   screen at (0,0), ignores the game's SetWindowPos/MoveWindow on the window it owns, and maps ScreenToClient into game coordinates (scale/letterbox aware).
 - present() is now serialised (it used a shared static buffer from both the game thread and WM_PAINT); the window is brought to the foreground
   after sizing (DirectInput needs foreground); calls are logged once per distinct flag combination in ddraw_log.txt.
+
+### ddraw v3 (user test 2: flashes fixed; window still screen-sized at scale=2 on their monitor; no mouse cursor visible)
+- Added: nested Lock counting (DirectDraw allows nested locks; the game's "Cursor failed on lock" path may rely on it), ShowCursor/SetCursor hooks with logging,
+  `cursor=1` ini option (always show the OS cursor), mouse/activation message logging, window-geometry logging.

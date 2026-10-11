@@ -10,6 +10,7 @@
  *            fullscreen=0   1 = borderless window covering the monitor, picture letterboxed
  *            border=1       0 = no title bar in windowed mode
  *            filter=0       1 = smooth (bilinear-like) scaling, 0 = nearest neighbour
+ *            cursor=0       1 = always show the Windows mouse cursor over the game window (ignore the game hiding it)
  *            log=0          1 = write every call to ddraw_log.txt
  */
 #define WIN32_LEAN_AND_MEAN
@@ -24,7 +25,7 @@
 #include <algorithm>
 
 /* ------------------------------------------------------------------ config + log */
-static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0; } cfg;
+static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0; } cfg;
 static FILE *logf;
 static CRITICAL_SECTION cs;
 static HMODULE self_mod;
@@ -47,6 +48,7 @@ static void load_cfg() {
     cfg.border = GetPrivateProfileIntA("ddraw", "border", 1, p);
     cfg.filter = GetPrivateProfileIntA("ddraw", "filter", 0, p);
     cfg.log = GetPrivateProfileIntA("ddraw", "log", 0, p);
+    cfg.cursor = GetPrivateProfileIntA("ddraw", "cursor", 0, p);
 }
 
 /* ------------------------------------------------------------------ pixel formats */
@@ -120,6 +122,9 @@ typedef BOOL (WINAPI *PFN_ClientToScreen)(HWND, LPPOINT);
 typedef int (WINAPI *PFN_GetSystemMetrics)(int);
 typedef BOOL (WINAPI *PFN_SetWindowPos)(HWND, HWND, int, int, int, int, UINT);
 typedef BOOL (WINAPI *PFN_MoveWindow)(HWND, int, int, int, int, BOOL);
+typedef int (WINAPI *PFN_ShowCursor)(BOOL);
+typedef HCURSOR (WINAPI *PFN_SetCursor)(HCURSOR);
+static PFN_ShowCursor o_ShowCursor; static PFN_SetCursor o_SetCursor;
 static PFN_GetClientRect o_GetClientRect; static PFN_GetWindowRect o_GetWindowRect; static PFN_ScreenToClient o_ScreenToClient;
 static PFN_ClientToScreen o_ClientToScreen; static PFN_GetSystemMetrics o_GetSystemMetrics; static PFN_SetWindowPos o_SetWindowPos; static PFN_MoveWindow o_MoveWindow;
 static bool hooks_installed;
@@ -146,6 +151,12 @@ static BOOL WINAPI hk_ClientToScreen(HWND h, LPPOINT p) {
 }
 static int WINAPI hk_GetSystemMetrics(int n) { if (G.w > 0 && G.primary) { if (n == SM_CXSCREEN) return G.w; if (n == SM_CYSCREEN) return G.h; } return o_GetSystemMetrics(n); }
 static BOOL WINAPI hk_SetWindowPos(HWND h, HWND a, int x, int y, int cx, int cy, UINT f) { if (virt_active(h)) f |= SWP_NOMOVE | SWP_NOSIZE; return o_SetWindowPos(h, a, x, y, cx, cy, f); }
+static int WINAPI hk_ShowCursor(BOOL show) {
+    LOGU(0x5000000u ^ (show ? 1u : 0u), "game calls ShowCursor(%d)", (int)show);
+    if (cfg.cursor && !show) { int c = o_ShowCursor(TRUE); return c - 1 < 0 ? c : c; }
+    return o_ShowCursor(show);
+}
+static HCURSOR WINAPI hk_SetCursor(HCURSOR c) { LOGU(0x6000000u ^ (c ? 1u : 0u), "game calls SetCursor(%p)", (void *)c); if (cfg.cursor && !c) return o_SetCursor(LoadCursor(NULL, IDC_ARROW)); return o_SetCursor(c); }
 static BOOL WINAPI hk_MoveWindow(HWND h, int x, int y, int w, int hh, BOOL r) { if (virt_active(h)) return TRUE; return o_MoveWindow(h, x, y, w, hh, r); }
 
 static void iat_hook(HMODULE mod, const char *dll, const char *fn, void *repl, void **orig) {
@@ -178,6 +189,9 @@ static void install_hooks() {
     tmp = 0; iat_hook(host, "USER32.dll", "GetSystemMetrics", (void *)hk_GetSystemMetrics, &tmp);
     tmp = 0; iat_hook(host, "USER32.dll", "SetWindowPos", (void *)hk_SetWindowPos, &tmp);
     tmp = 0; iat_hook(host, "USER32.dll", "MoveWindow", (void *)hk_MoveWindow, &tmp);
+    o_ShowCursor = (PFN_ShowCursor)GetProcAddress(u, "ShowCursor"); o_SetCursor = (PFN_SetCursor)GetProcAddress(u, "SetCursor");
+    tmp = 0; iat_hook(host, "USER32.dll", "ShowCursor", (void *)hk_ShowCursor, &tmp);
+    tmp = 0; iat_hook(host, "USER32.dll", "SetCursor", (void *)hk_SetCursor, &tmp);
 }
 
 struct Surface {
@@ -191,7 +205,7 @@ struct Surface {
     Palette *pal = 0; Clipper *clip = 0;
     std::vector<Surface *> attached;    /* owned references */
     Surface *parent = 0;                /* weak: surface we are attached to */
-    bool locked = false; HDC dc = 0; HBITMAP dib = 0; void *dibbits = 0; HGDIOBJ olddib = 0;
+    int locked = 0; HDC dc = 0; HBITMAP dib = 0; void *dibbits = 0; HGDIOBJ olddib = 0;
     bool isprimary() const { return (caps & DDSCAPS_PRIMARYSURFACE) != 0; }
 
     struct V7 : IDirectDrawSurface7 { Surface *s;
@@ -386,14 +400,17 @@ static void apply_window() {
     int x = mi.rcWork.left + ((mi.rcWork.right - mi.rcWork.left) - ww) / 2, y = mi.rcWork.top + ((mi.rcWork.bottom - mi.rcWork.top) - wh) / 2;
     if (x < mi.rcWork.left) { x = mi.rcWork.left; }
     if (y < mi.rcWork.top) { y = mi.rcWork.top; }
+    LOG("apply_window: client %dx%d, window %dx%d at %d,%d (monitor work area %ldx%ld)", cwid, chei, ww, wh, x, y, mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top);
     (o_SetWindowPos ? o_SetWindowPos : SetWindowPos)(h, HWND_NOTOPMOST, x, y, ww, wh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
     SetForegroundWindow(h); SetFocus(h); SetActiveWindow(h);
 }
 
 static LRESULT CALLBACK hook_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     WNDPROC old = G.oldproc;
+    if (cfg.log) { static int nm; if (m == WM_MOUSEMOVE) { if (nm < 8) { nm++; LOG("WM_MOUSEMOVE client=%d,%d", (short)LOWORD(l), (short)HIWORD(l)); } } else if (m == WM_SETCURSOR || m == WM_ACTIVATE || m == WM_ACTIVATEAPP || m == WM_KILLFOCUS || m == WM_SETFOCUS || m == WM_LBUTTONDOWN || m == WM_SIZE) LOGU(0x7000000u ^ m ^ ((unsigned)w << 8), "WM 0x%04x wparam=0x%lx lparam=0x%lx", m, (unsigned long)w, (unsigned long)l); }
     switch (m) {
     case WM_ERASEBKGND: if (G.primary) return 1; break;
+    case WM_SETCURSOR: if (cfg.cursor && LOWORD(l) == HTCLIENT) { SetCursor(LoadCursor(NULL, IDC_ARROW)); return TRUE; } break;
     case WM_PAINT: if (G.primary) { PAINTSTRUCT ps; BeginPaint(h, &ps); EndPaint(h, &ps); present(); return 0; } break;
     case WM_SIZE: G.dirty = true; break;
     case WM_NCDESTROY: SetWindowLongPtr(h, GWLP_WNDPROC, (LONG_PTR)old); G.oldproc = 0; G.hwnd = 0; return CallWindowProc(old, h, m, w, l);
@@ -480,8 +497,7 @@ HRESULT Surface::V3::Lock(LPRECT r, LPDDSURFACEDESC d, DWORD f, HANDLE e) {
 
 HRESULT Surface::V7::Lock(LPRECT r, LPDDSURFACEDESC2 d, DWORD lf, HANDLE) {
     Guard l; LOGU(0x4000000u ^ lf ^ (s->isprimary() ? 0x80000000u : 0), "Lock %s flags=0x%lx", s->isprimary() ? "primary" : "surface", lf); if (!s->mem) return DDERR_SURFACELOST;
-    if (s->locked) return DDERR_SURFACEBUSY;
-    s->locked = true;
+    s->locked++;
     if (d) {
         *d = s->desc; d->dwSize = sizeof *d;
         d->dwFlags |= DDSD_LPSURFACE | DDSD_PITCH | DDSD_WIDTH | DDSD_HEIGHT | DDSD_PIXELFORMAT | DDSD_CAPS;
@@ -492,8 +508,8 @@ HRESULT Surface::V7::Lock(LPRECT r, LPDDSURFACEDESC2 d, DWORD lf, HANDLE) {
     return DD_OK;
 }
 HRESULT Surface::V7::Unlock(LPRECT) {
-    Guard l; if (!s->locked) return DDERR_NOTLOCKED; s->locked = false;
-    if (s->isprimary()) present();
+    Guard l; if (s->locked <= 0) return DDERR_NOTLOCKED; s->locked--;
+    if (!s->locked && s->isprimary()) present();
     return DD_OK;
 }
 HRESULT Surface::V7::GetColorKey(DWORD f, LPDDCOLORKEY k) {

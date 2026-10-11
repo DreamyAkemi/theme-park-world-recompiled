@@ -37,3 +37,11 @@ Game files are never committed (see .gitignore).
   pool/array container method) while cleaning up after the failed init.
 - Engine diagnostics are written to `enginedebug.txt` in the game folder (fopen via 0x55a390; 0x55a400 writes a second log) -
   that file should say which init step failed.
+
+## DirectDraw failure (enginedebug.txt / fallback.txt)
+- Log: "Initializing DirectDraw ... NVIDIA GeForce RTX 4070 ... Fullscreen 640:480:16 ... Action not supported." (x2), then
+  "Mommy! Where's fluffy?" (default branch of the HRESULT->text function at 0x560d64), fallback.txt: "FAILED, exiting (DD error code 80004001)".
+- Init (0x5594xx-0x559cxx): QI IDirectDraw2 ({B3A6F3E0-...}) then IDirectDraw4 ({9C59509A-...}); GetDeviceIdentifier (vtbl+0x6c);
+  SetCooperativeLevel(hwnd, 0x851) (+0x50); SetDisplayMode(640,480,16,0,0) (+0x54); CreateSurface with a 0x7c-byte DDSURFACEDESC2 (+0x18).
+- Win11's built-in ddraw returns E_NOTIMPL (0x80004001) for one of these. Plan: shim ddraw with cnc-ddraw (or dgVoodoo2); long term
+  a small ddraw replacement of our own is the natural place for widescreen / scaling.

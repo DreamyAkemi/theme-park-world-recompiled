@@ -7,7 +7,10 @@ works on a copy of the game you already own.
 ## Status
 - `patcher/tpw_patch.exe`: repairs the damaged import table in `tp.exe`, installs a small `weachatr.dll` shim,
   and sets the `Language` registry value. Backs up what it changes; `revert` undoes it.
-- Still needed today: a DirectDraw wrapper (e.g. cnc-ddraw) next to `tp.exe`. Our own replacement is the next milestone.
+- `ddraw/`: our own DirectDraw layer (`ddraw.dll`, C++ from the public API). Software surfaces, scaled GDI present, flip chains,
+  colour keys, GetDC, palettes; Direct3D is refused so the game uses its software renderer. Options in `ddraw.ini`
+  (`scale`, `fullscreen`, `border`, `filter`, `log`). `ddraw/test_ddraw.cpp` exercises it (34 checks, run under Wine in development).
+  The patcher installs it; use `--replace-ddraw` to swap out cnc-ddraw/dgVoodoo.
 - `tools/tp_debug.c`: diagnostic launcher (logs file access, registry, window creation, exits).
 - `docs/findings.md`: reverse-engineering notes.
 
@@ -21,7 +24,7 @@ Put `tpw_patch.exe` anywhere, then (as Administrator, the registry value is mach
 You also need `Data\Language\English` from your own disc.
 
 ## Building
-Needs `i686-w64-mingw32-gcc` and `python3`:
+Needs `i686-w64-mingw32-gcc`, `i686-w64-mingw32-g++` and `python3`:
 
     make -C patcher
 

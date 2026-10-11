@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "payload_weachatr.h"
+#include "payload_ddraw.h"
 
 #define KNOWN_ORIGINAL "00f9dfedcb2d4c01c3098f94fccbef6486a7f8aa40494d0921e8cdb8649f1409"
 #define KNOWN_PATCHED  "b097f3ad9f0b69542697fe7d5307141ddb47d1d9dbebf0060047ea5f4385e32a"
@@ -180,6 +181,20 @@ static const char *registry_language(int write) {
 }
 
 /* ---- commands ---- */
+/* ---- ddraw.dll (our DirectDraw layer) ---- */
+static const char DDRAW_INI[] =
+    "[ddraw]\r\n; Integer window scale of the game's display mode (windowed mode). 1 = native size, 2 = double, ...\r\nscale=1\r\n"
+    "; 1 = borderless window covering the monitor with the picture letterboxed (aspect ratio kept)\r\nfullscreen=0\r\n"
+    "; 0 = no title bar in windowed mode\r\nborder=1\r\n; 0 = sharp scaling, 1 = smooth scaling\r\nfilter=0\r\n"
+    "; 1 = write every DirectDraw call to ddraw_log.txt (for bug reports)\r\nlog=0\r\n";
+/* 1 = file is exactly our embedded ddraw.dll, 0 = a different file, -1 = missing */
+static int ddraw_state(const char *game) {
+    char p[MAX_PATH]; Buf b; join(p, sizeof p, game, "ddraw.dll");
+    if (!exists(p)) return -1;
+    if (!read_file(p, &b)) return 0;
+    int same = b.n == ddraw_dll_len && !memcmp(b.p, ddraw_dll, b.n); free(b.p); return same;
+}
+
 static int cmd_status(const char *game) {
     char path[MAX_PATH], desc[512], msg[256], hex[65]; Buf b;
     join(path, sizeof path, game, "tp.exe");
@@ -196,12 +211,11 @@ static int cmd_status(const char *game) {
     join(path, sizeof path, game, "Data\\Language\\English");
     printf("Data\\Language\\English: %s\n", exists(path) ? "yes" : "NO");
     printf("registry Language: %s\n", registry_language(0));
-    join(path, sizeof path, game, "ddraw.dll");
-    printf("ddraw.dll in game folder: %s (a DirectDraw wrapper is still required for now)\n", exists(path) ? "yes" : "no");
+    { int d = ddraw_state(game); printf("ddraw.dll: %s\n", d == 1 ? "ours (tpw-ddraw)" : d == 0 ? "a different DirectDraw wrapper (cnc-ddraw/dgVoodoo?)" : "missing (Windows 11's own DirectDraw cannot run the game)"); }
     return 0;
 }
 
-static int cmd_apply(const char *game, int force) {
+static int cmd_apply(const char *game, int force, int replace_ddraw) {
     char pexe[MAX_PATH], path[MAX_PATH], bak[MAX_PATH], desc[512], msg[256], hex[65]; Buf b;
     join(pexe, sizeof pexe, game, "tp.exe");
     if (!read_file(pexe, &b)) { printf("tp.exe not found in %s\n", game); return 1; }
@@ -234,8 +248,18 @@ static int cmd_apply(const char *game, int force) {
         } else printf("weachatr: %s\n", msg);
     }
     printf("registry Language: %s\n", registry_language(1));
-    join(path, sizeof path, game, "ddraw.dll");
-    if (!exists(path)) printf("NOTE: no DirectDraw wrapper in the game folder yet. Windows 11 cannot run the game's display setup without one.\n");
+    {
+        int d = ddraw_state(game); char dd[MAX_PATH], ini[MAX_PATH], bak[MAX_PATH];
+        join(dd, sizeof dd, game, "ddraw.dll"); join(ini, sizeof ini, game, "ddraw.ini"); join(bak, sizeof bak, game, "ddraw_orig.dll");
+        if (d == 1) printf("ddraw.dll: ours, already installed\n");
+        else if (d == 0 && !replace_ddraw) printf("ddraw.dll: a different DirectDraw wrapper is installed; left alone (add --replace-ddraw to switch to ours, the old one is kept as ddraw_orig.dll)\n");
+        else {
+            if (d == 0) { if (exists(bak)) DeleteFileA(bak); if (!MoveFileExA(dd, bak, 0)) { printf("cannot back up existing ddraw.dll\n"); return 5; } }
+            if (!write_file(dd, ddraw_dll, ddraw_dll_len)) { printf("cannot write ddraw.dll\n"); return 5; }
+            if (!exists(ini)) write_file(ini, DDRAW_INI, sizeof DDRAW_INI - 1);
+            printf("installed ddraw.dll (our DirectDraw layer) and ddraw.ini%s\n", d == 0 ? "; previous one kept as ddraw_orig.dll" : "");
+        }
+    }
     return 0;
 }
 
@@ -245,23 +269,26 @@ static int cmd_revert(const char *game) {
     if (exists(bak)) { MoveFileExA(bak, pexe, MOVEFILE_REPLACE_EXISTING); printf("restored tp.exe\n"); }
     join(orig, sizeof orig, game, "weachatr_orig.dll"); join(cur, sizeof cur, game, "weachatr.dll");
     if (exists(orig)) { MoveFileExA(orig, cur, MOVEFILE_REPLACE_EXISTING); printf("restored weachatr.dll\n"); }
+    { char dd[MAX_PATH], bak[MAX_PATH]; join(dd, sizeof dd, game, "ddraw.dll"); join(bak, sizeof bak, game, "ddraw_orig.dll");
+      if (ddraw_state(game) == 1) { DeleteFileA(dd); printf("removed our ddraw.dll\n"); if (exists(bak)) { MoveFileExA(bak, dd, 0); printf("restored previous ddraw.dll\n"); } } }
     printf("registry value left in place\n");
     return 0;
 }
 
 int main(int argc, char **argv) {
-    char game[MAX_PATH]; int force = 0; const char *cmd = NULL;
+    char game[MAX_PATH]; int force = 0, replace_ddraw = 0; const char *cmd = NULL;
     GetModuleFileNameA(NULL, game, sizeof game);
     char *s = strrchr(game, '\\'); if (s) *s = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game-dir") && i + 1 < argc) snprintf(game, sizeof game, "%s", argv[++i]);
         else if (!strcmp(argv[i], "--force")) force = 1;
+        else if (!strcmp(argv[i], "--replace-ddraw")) replace_ddraw = 1;
         else if (!cmd) cmd = argv[i];
     }
     size_t l = strlen(game); while (l > 3 && (game[l - 1] == '\\' || game[l - 1] == '/')) game[--l] = 0;
-    if (!cmd) { puts("usage: tpw_patch status|apply|revert [--game-dir DIR] [--force]"); return 64; }
+    if (!cmd) { puts("usage: tpw_patch status|apply|revert [--game-dir DIR] [--force] [--replace-ddraw]"); return 64; }
     if (!strcmp(cmd, "status")) return cmd_status(game);
-    if (!strcmp(cmd, "apply")) return cmd_apply(game, force);
+    if (!strcmp(cmd, "apply")) return cmd_apply(game, force, replace_ddraw);
     if (!strcmp(cmd, "revert")) return cmd_revert(game);
     puts("unknown command"); return 64;
 }

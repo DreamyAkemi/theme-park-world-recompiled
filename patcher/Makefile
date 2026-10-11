@@ -9,8 +9,14 @@ payload/weachatr.dll: build_shim.py shim/weachatr_stubs.c shim/weachatr_imports.
 payload_weachatr.h: payload/weachatr.dll
 	python3 -c "d=open('payload/weachatr.dll','rb').read(); print('static const unsigned char shim_dll[] = {'+','.join(map(str,d))+'};\nstatic const unsigned shim_dll_len = %d;' % len(d))" > $@
 
-tpw_patch.exe: tpw_patch.c payload_weachatr.h
+../ddraw/ddraw.dll: ../ddraw/ddraw.cpp ../ddraw/ddraw.def
+	$(MAKE) -C ../ddraw ddraw.dll
+
+payload_ddraw.h: ../ddraw/ddraw.dll
+	python3 -c "d=open('../ddraw/ddraw.dll','rb').read(); print('static const unsigned char ddraw_dll[] = {'+','.join(map(str,d))+'};\nstatic const unsigned ddraw_dll_len = %d;' % len(d))" > $@
+
+tpw_patch.exe: tpw_patch.c payload_weachatr.h payload_ddraw.h
 	$(MINGW_CC) -O2 -Wall -static -o $@ tpw_patch.c -lbcrypt -ladvapi32
 
 clean:
-	rm -f tpw_patch.exe payload_weachatr.h payload/weachatr.dll
+	rm -f tpw_patch.exe payload_weachatr.h payload_ddraw.h payload/weachatr.dll

@@ -15,3 +15,5 @@ work/
 __pycache__/
 patcher/payload_weachatr.h
 patcher/tpw_patch.exe
+patcher/payload_ddraw.h
+ddraw/test_ddraw.exe

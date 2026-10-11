@@ -74,3 +74,12 @@ Game files are never committed (see .gitignore).
 - v10 log: all of bouncy..lookout load (LoadRide@413a60 returns 1); minecart.wad's LoadRide returns 0 -> ParseEntry 0 -> level load aborted -> world never created.
 - The user's Data mixes file dates: minecart.wad 2000-01-21, coaster1.wad 1999-12-09, Rides.sam 1999-10-10, tp.exe built 1999-10-25 -> the data looks newer than the exe.
 - LoadRide failure exits: 0x4140c2 via 413b65 (ride count==0x14a), 413c60 (lookup 0x401700 failed), or error reporter 0x4056b0 (code 3) paths.
+
+
+## Our DirectDraw layer (ddraw/)
+- Implements IDirectDraw/2/4/7 and IDirectDrawSurface/2/3/4/7 (shared vtable prefixes: one class serves v1-v3, one serves v4/v7), palettes,
+  clippers; system-memory surfaces (any pixel format incl. 565/555/4444/8-bit/Z), flip chains by buffer rotation, colour-key/stretch/mirror Blt,
+  BltFast, GetDC via DIB section, mip chains, EnumDisplayModes, GetDeviceIdentifier/GetCaps/GetAvailableVidMem.
+- Presentation: primary -> 32-bit DIB -> StretchDIBits into the game's window (aspect-preserving), WM_PAINT/WM_ERASEBKGND and mouse coordinates
+  handled by subclassing the window (mouse remap when scaled).
+- Verified under Wine with test_ddraw.exe (34 checks) and a screenshot of the presented frame. Not yet verified with the real game.

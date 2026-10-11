@@ -31,3 +31,9 @@ Game files are never committed (see .gitignore).
   `Language` value as a DWORD. If it is missing, the game shows its error handler (0x4056b0) and returns from WinMain (silent exit).
 - The value itself is not used by that function; the language folder (e.g. Data\Language\French) is chosen from the Windows locale.
 - Workaround for non-installed copies: create the DWORD, and make Data\Language\<locale name> exist (e.g. copy English to French).
+
+## Engine init (after Language fix, Language=9 -> Data\Language\English)
+- Game now shows "Error: Engine failed to initialise" and crashes at 0x65addd (`mov ecx,[eax+0xc]` with a NULL `this` in a small
+  pool/array container method) while cleaning up after the failed init.
+- Engine diagnostics are written to `enginedebug.txt` in the game folder (fopen via 0x55a390; 0x55a400 writes a second log) -
+  that file should say which init step failed.

@@ -33,8 +33,6 @@ static Hook H[] = {
     {"kernelbase.dll", "RegCreateKeyExA", 2, 0},
     {"kernelbase.dll", "RegQueryValueExA", 2, 0},
     {"kernelbase.dll", "RegSetValueExA", 2, 0},
-    {"kernelbase.dll", "GetLocaleInfoA", 0, 0},
-    {"kernelbase.dll", "GetUserDefaultLCID", 0, 0},
     {"user32.dll", "MessageBoxA", 2, 3},
     {"user32.dll", "CreateWindowExA", 2, 3},
     {"user32.dll", "PostQuitMessage", 0, 0},

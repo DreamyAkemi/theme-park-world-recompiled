@@ -1,0 +1,5 @@
+Windows Registry Editor Version 5.00
+
+; The retail installer normally writes this. The 32-bit game reads it from the WOW6432Node view.
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Bullfrog Productions Ltd\Theme Park World]
+"Language"="English"

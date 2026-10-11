@@ -210,6 +210,7 @@ static void mouse_poll(int *dx, int *dy, bool commit) {
     if (M.snap == 0) { if (in) { *dx = -3000; *dy = -3000; if (commit) { M.snap = 1; M.x = -2; M.y = -2; } } return; }
     if (M.snap == 1) { if (in) { *dx = gx; *dy = gy; if (commit) { M.snap = 2; M.x = gx; M.y = gy; } } return; }
     if (in) { *dx = gx - M.x; *dy = gy - M.y; nx = gx; ny = gy; }
+    if (commit && (*dx || *dy)) { static int n; if (n < 80) { n++; LOG("mouse delta %d,%d (real pointer in game px %d,%d)", *dx, *dy, gx, gy); } }
     if (commit) { M.x = nx; M.y = ny; }
 }
 
@@ -304,6 +305,13 @@ static HRESULT WINAPI hk_DirectInputCreateA(HINSTANCE h, DWORD v, LPDIRECTINPUTA
     return hr;
 }
 
+
+/* log-only probes: how does the game grab/centre the cursor in a park? (first calls only) */
+static BOOL (WINAPI *o_GetCursorPos)(LPPOINT); static BOOL (WINAPI *o_SetCursorPos)(int, int); static BOOL (WINAPI *o_ClipCursor)(const RECT *);
+static BOOL WINAPI hk_GetCursorPos(LPPOINT p) { BOOL r = o_GetCursorPos(p); static int n; if (r && n < 40) { n++; LOG("game GetCursorPos -> %ld,%ld", p->x, p->y); } return r; }
+static BOOL WINAPI hk_SetCursorPos(int x, int y) { static int n; if (n < 60) { n++; LOG("game SetCursorPos(%d,%d)", x, y); } return o_SetCursorPos(x, y); }
+static BOOL WINAPI hk_ClipCursor(const RECT *r) { static int n; if (n < 40) { n++; if (r) LOG("game ClipCursor(%ld,%ld,%ld,%ld)", r->left, r->top, r->right, r->bottom); else LOG("game ClipCursor(NULL)"); } return o_ClipCursor(r); }
+
 static void iat_hook(HMODULE mod, const char *dll, const char *fn, void *repl, void **orig) {
     BYTE *b = (BYTE *)mod; IMAGE_DOS_HEADER *dh = (IMAGE_DOS_HEADER *)b; if (dh->e_magic != IMAGE_DOS_SIGNATURE) return;
     IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(b + dh->e_lfanew); IMAGE_DATA_DIRECTORY dd = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]; if (!dd.VirtualAddress) return;
@@ -337,6 +345,8 @@ static void install_hooks() {
     o_ShowCursor = (PFN_ShowCursor)GetProcAddress(u, "ShowCursor"); o_SetCursor = (PFN_SetCursor)GetProcAddress(u, "SetCursor");
     tmp = 0; iat_hook(host, "USER32.dll", "ShowCursor", (void *)hk_ShowCursor, &tmp);
     tmp = 0; iat_hook(host, "USER32.dll", "SetCursor", (void *)hk_SetCursor, &tmp);
+    o_GetCursorPos = (decltype(o_GetCursorPos))GetProcAddress(u, "GetCursorPos"); o_SetCursorPos = (decltype(o_SetCursorPos))GetProcAddress(u, "SetCursorPos"); o_ClipCursor = (decltype(o_ClipCursor))GetProcAddress(u, "ClipCursor");
+    if (cfg.log) { tmp = 0; iat_hook(host, "USER32.dll", "GetCursorPos", (void *)hk_GetCursorPos, &tmp); tmp = 0; iat_hook(host, "USER32.dll", "SetCursorPos", (void *)hk_SetCursorPos, &tmp); tmp = 0; iat_hook(host, "USER32.dll", "ClipCursor", (void *)hk_ClipCursor, &tmp); }
     o_ShowWindow = (PFN_ShowWindow)GetProcAddress(u, "ShowWindow"); tmp = 0; iat_hook(host, "USER32.dll", "ShowWindow", (void *)hk_ShowWindow, &tmp);
     HMODULE di = LoadLibraryA("dinput.dll");
     if (di) { o_DICreateA = (PFN_DICreateA)GetProcAddress(di, "DirectInputCreateA"); if (o_DICreateA) { tmp = 0; iat_hook(host, "DINPUT.dll", "DirectInputCreateA", (void *)hk_DirectInputCreateA, &tmp); } }

@@ -210,6 +210,7 @@ static bool btn_down(int i) {
 static void mouse_poll(int *dx, int *dy, bool commit) {
     *dx = *dy = 0; int gx, gy; bool in = real_pointer_game(&gx, &gy);
     int nx = M.x, ny = M.y;
+    if (M.snap < 2 && !in) { static int w; if (cfg.log && (w++ % 200) == 0 && w < 4000) LOG("[focus] mouse waiting (snap=%d): pointer not usable (foreground=%p game=%p)", M.snap, (void *)GetForegroundWindow(), (void *)G.hwnd); }
     if (M.snap == 0) { if (in) { *dx = -3000; *dy = -3000; if (commit) { M.snap = 1; M.x = -2; M.y = -2; } } return; }
     if (M.snap == 1) { if (in) { *dx = gx; *dy = gy; if (commit) { M.snap = 2; M.x = gx; M.y = gy; } } return; }
     if (in) { *dx = gx - M.x; *dy = gy - M.y; nx = gx; ny = gy; }
@@ -234,11 +235,11 @@ struct WDevice : IDirectInputDeviceA {
     HRESULT STDMETHODCALLTYPE SetProperty(REFGUID g, LPCDIPROPHEADER h) override {
         HRESULT hr = r->SetProperty(g, h); unsigned long id = (unsigned long)(ULONG_PTR)&g; unsigned long val = h && h->dwSize >= sizeof(DIPROPDWORD) ? ((const DIPROPDWORD *)h)->dwData : 0;
         LOG("DInput %s SetProperty(id=%lu%s value=%lu) -> 0x%08lx", mouse ? "mouse" : kbd ? "keyboard" : "device", id, id == 1 ? " BUFFERSIZE" : id == 2 ? " AXISMODE(0=abs,1=rel)" : "", val, (unsigned long)hr); return hr; }
-    HRESULT STDMETHODCALLTYPE Acquire() override { if (mouse && cfg.synth_mouse) { M.acquired = true; M.snap = 0; M.x = M.y = -1; M.wheel = 0; } HRESULT hr = r->Acquire(); if (mouse && cfg.synth_mouse) hr = DI_OK; LOGU(0x9000000u ^ (unsigned)hr ^ (mouse ? 1u : 0), "DInput %s Acquire -> 0x%08lx (foreground=%p game window=%p)", mouse ? "mouse" : kbd ? "keyboard" : "device", (unsigned long)hr, (void *)GetForegroundWindow(), (void *)G.hwnd); return hr; }
-    HRESULT STDMETHODCALLTYPE Unacquire() override { LOGU(0xA000000u ^ (mouse ? 1u : 0), "DInput %s Unacquire", mouse ? "mouse" : kbd ? "keyboard" : "device"); if (mouse && cfg.synth_mouse) { M.acquired = false; r->Unacquire(); return DI_OK; } return r->Unacquire(); }
+    HRESULT STDMETHODCALLTYPE Acquire() override { if (mouse && cfg.synth_mouse) { M.acquired = true; M.snap = 0; M.x = M.y = -1; M.wheel = 0; } HRESULT hr = r->Acquire(); if (mouse && cfg.synth_mouse) hr = DI_OK; { static int na; if (na++ < 120) LOG("[focus] DInput %s Acquire -> 0x%08lx (foreground=%p game window=%p)", mouse ? "mouse" : kbd ? "keyboard" : "device", (unsigned long)hr, (void *)GetForegroundWindow(), (void *)G.hwnd); } return hr; }
+    HRESULT STDMETHODCALLTYPE Unacquire() override { { static int nu; if (nu++ < 120) LOG("[focus] DInput %s Unacquire", mouse ? "mouse" : kbd ? "keyboard" : "device"); } if (mouse && cfg.synth_mouse) { M.acquired = false; r->Unacquire(); return DI_OK; } return r->Unacquire(); }
     HRESULT STDMETHODCALLTYPE GetDeviceState(DWORD cb, LPVOID d) override {
         if (mouse && cfg.synth_mouse) {
-            Guard g; if (!M.acquired) return DIERR_NOTACQUIRED;
+            Guard g; if (!M.acquired) { static int nn; if (cfg.log && nn++ < 20) LOG("[focus] mouse GetDeviceState while not acquired"); return DIERR_NOTACQUIRED; }
             memset(d, 0, cb); int dx, dy; mouse_poll(&dx, &dy, true);
             if (cb >= 12) { LONG *v = (LONG *)d; v[0] = dx; v[1] = dy; v[2] = M.wheel; M.wheel = 0; }
             for (int i = 0; i < 4 && 12 + i < (int)cb; i++) ((BYTE *)d)[12 + i] = btn_down(i) ? 0x80 : 0;
@@ -253,7 +254,7 @@ struct WDevice : IDirectInputDeviceA {
     bool pb[4] = {false, false, false, false};   /* last reported button states for synthetic events */
     HRESULT STDMETHODCALLTYPE GetDeviceData(DWORD cb, LPDIDEVICEOBJECTDATA d, LPDWORD n, DWORD f) override {
         if (mouse && cfg.synth_mouse) {
-            Guard g; if (!M.acquired) { if (n) *n = 0; return DIERR_NOTACQUIRED; }
+            Guard g; if (!M.acquired) { static int nn; if (cfg.log && nn++ < 20) LOG("[focus] mouse GetDeviceData while not acquired"); if (n) *n = 0; return DIERR_NOTACQUIRED; }
             DWORD cap = n ? *n : 0, out = 0; bool peek = (f & DIGDD_PEEK) != 0; BYTE *base = (BYTE *)d;
             auto put = [&](DWORD ofs, LONG data) { if (!d || out >= cap) return; BYTE *e = base + (size_t)out * cb; memset(e, 0, cb); *(DWORD *)e = ofs; *(LONG *)(e + 4) = data; *(DWORD *)(e + 8) = GetTickCount(); *(DWORD *)(e + 12) = ++M.seq; out++; };
             int dx, dy; mouse_poll(&dx, &dy, !peek);
@@ -588,7 +589,7 @@ static void apply_window() {
 
 static LRESULT CALLBACK hook_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     WNDPROC old = G.oldproc;
-    if (cfg.log) { static int nm; static unsigned long total_mm; if (m == WM_MOUSEMOVE) { total_mm++; if (total_mm % 1000 == 0) LOG("%lu WM_MOUSEMOVE messages so far", total_mm); if (nm < 8) { nm++; LOG("WM_MOUSEMOVE client=%d,%d", (short)LOWORD(l), (short)HIWORD(l)); } } else if (m == WM_SETCURSOR || m == WM_ACTIVATE || m == WM_ACTIVATEAPP || m == WM_KILLFOCUS || m == WM_SETFOCUS || m == WM_LBUTTONDOWN || m == WM_SIZE) LOGU(0x7000000u ^ m ^ ((unsigned)w << 8), "WM 0x%04x wparam=0x%lx lparam=0x%lx", m, (unsigned long)w, (unsigned long)l); }
+    if (cfg.log) { static int nm; static unsigned long total_mm; if (m == WM_MOUSEMOVE) { total_mm++; if (total_mm % 1000 == 0) LOG("%lu WM_MOUSEMOVE messages so far", total_mm); if (nm < 8) { nm++; LOG("WM_MOUSEMOVE client=%d,%d", (short)LOWORD(l), (short)HIWORD(l)); } } else if (m == WM_ACTIVATE || m == WM_ACTIVATEAPP || m == WM_KILLFOCUS || m == WM_SETFOCUS || m == WM_SIZE || m == WM_SHOWWINDOW || m == WM_SYSCOMMAND || m == WM_ENTERSIZEMOVE || m == WM_EXITSIZEMOVE || m == WM_CAPTURECHANGED) { static int nf; if (nf < 300) { nf++; LOG("[focus] WM 0x%04x wparam=0x%lx lparam=0x%lx foreground=%p game=%p", m, (unsigned long)w, (unsigned long)l, (void *)GetForegroundWindow(), (void *)h); } } else if (m == WM_SETCURSOR || m == WM_LBUTTONDOWN) LOGU(0x7000000u ^ m ^ ((unsigned)w << 8), "WM 0x%04x wparam=0x%lx lparam=0x%lx", m, (unsigned long)w, (unsigned long)l); }
     switch (m) {
     case WM_ERASEBKGND: if (G.primary) return 1; break;
     case WM_GETMINMAXINFO: if (G.w && !cfg.fullscreen && g_winw > 0) { LRESULT r = old ? CallWindowProc(old, h, m, w, l) : DefWindowProc(h, m, w, l); MINMAXINFO *mm = (MINMAXINFO *)l; mm->ptMaxSize.x = g_winw; mm->ptMaxSize.y = g_winh; mm->ptMaxPosition.x = 0; mm->ptMaxPosition.y = 0; return r; } break;

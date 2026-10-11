@@ -271,7 +271,8 @@ struct WDevice : IDirectInputDeviceA {
     HRESULT STDMETHODCALLTYPE SetDataFormat(LPCDIDATAFORMAT f) override { HRESULT hr = r->SetDataFormat(f); LOG("DInput %s SetDataFormat(objects=%lu size=%lu) -> 0x%08lx", mouse ? "mouse" : kbd ? "keyboard" : "device", f ? (unsigned long)f->dwNumObjs : 0ul, f ? (unsigned long)f->dwDataSize : 0ul, (unsigned long)hr); return hr; }
     HRESULT STDMETHODCALLTYPE SetEventNotification(HANDLE e) override { return r->SetEventNotification(e); }
     HRESULT STDMETHODCALLTYPE SetCooperativeLevel(HWND h, DWORD f) override {
-        DWORD nf = f; if (mouse && cfg.mouse_shared) nf = (f & ~DISCL_EXCLUSIVE) | DISCL_NONEXCLUSIVE;
+        DWORD nf = f & ~(DWORD)DISCL_NOWINKEY; /* keep Win+Shift+S, Win+D etc. working */
+        if (mouse && cfg.mouse_shared) nf = (nf & ~DISCL_EXCLUSIVE) | DISCL_NONEXCLUSIVE;
         HRESULT hr = r->SetCooperativeLevel(h, nf);
         LOG("DInput %s SetCooperativeLevel(hwnd=%p flags=0x%lx%s) -> 0x%08lx", mouse ? "mouse" : kbd ? "keyboard" : "device", (void *)h, (unsigned long)f, nf != f ? " forced non-exclusive" : "", (unsigned long)hr); return hr;
     }

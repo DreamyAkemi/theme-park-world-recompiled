@@ -30,7 +30,7 @@
 #include <algorithm>
 
 /* ------------------------------------------------------------------ config + log */
-static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0, mouse_shared = 1, synth_mouse = 1, force_w = 0, force_h = 0, from_w = 0, from_h = 0, width = 0, height = 0; } cfg;
+static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0, mouse_shared = 1, synth_mouse = 1, force_w = 0, force_h = 0, from_w = 0, from_h = 0, width = 0, height = 0, ui_width = 0; } cfg;
 static HCURSOR g_gamecursor;
 static FILE *logf;
 static CRITICAL_SECTION cs;
@@ -58,6 +58,7 @@ static void load_cfg() {
     cfg.mouse_shared = GetPrivateProfileIntA("ddraw", "shared_mouse", 1, p);
     cfg.synth_mouse = GetPrivateProfileIntA("ddraw", "synth_mouse", 1, p);
     cfg.width = GetPrivateProfileIntA("ddraw", "width", 0, p); cfg.height = GetPrivateProfileIntA("ddraw", "height", 0, p);
+    cfg.ui_width = GetPrivateProfileIntA("ddraw", "ui_width", 0, p);
     cfg.force_w = GetPrivateProfileIntA("ddraw", "force_width", 0, p); cfg.force_h = GetPrivateProfileIntA("ddraw", "force_height", 0, p);
     cfg.from_w = GetPrivateProfileIntA("ddraw", "force_from_width", 0, p); cfg.from_h = GetPrivateProfileIntA("ddraw", "force_from_height", 0, p);
 }
@@ -1014,7 +1015,19 @@ HRESULT WINAPI DllGetClassObject(REFCLSID, REFIID, LPVOID *o) { *o = 0; return C
 
 /* EXPERIMENT: make the engine's own resolution selector (tp.exe 1999-10-25, function around 0x448f00) pick width x height.
  * Each size block is "mov eax,W / mov ecx,H"; we only touch a block if it still holds the original bytes. */
+static void patch_ui_folder() {
+    /* the UI loader (0x57e759) does "mov eax,[screen width]" and uses it to pick Data\\Init\\<400|512|640|800|1024>; force that number */
+    if (cfg.ui_width != 400 && cfg.ui_width != 512 && cfg.ui_width != 640 && cfg.ui_width != 800 && cfg.ui_width != 1024) return;
+    BYTE *p = (BYTE *)(uintptr_t)0x57e759; static const BYTE orig[5] = { 0xA1, 0x68, 0xC8, 0x87, 0x00 };
+    if (IsBadReadPtr(p, 5) || memcmp(p, orig, 5)) { LOG("ui folder patch: bytes do not match, skipped"); return; }
+    DWORD old; VirtualProtect(p, 5, PAGE_EXECUTE_READWRITE, &old);
+    p[0] = 0xB8; *(DWORD *)(p + 1) = cfg.ui_width;
+    VirtualProtect(p, 5, old, &old); FlushInstructionCache(GetCurrentProcess(), p, 5);
+    LOG("ui folder patch: using Data\\Init\\%d", cfg.ui_width);
+}
+
 static void patch_resolution() {
+    patch_ui_folder();
     if (cfg.width < 320 || cfg.height < 240) return;
     static const struct { DWORD va; DWORD w, h; } blk[] = { {0x449023, 512, 384}, {0x44903e, 800, 600}, {0x44904f, 640, 480} };
     for (auto &b : blk) {

@@ -51,3 +51,9 @@ Game files are never committed (see .gitignore).
   (engine log: "Software renderer initialized succesfully", 640x480x16). That is fine.
 - Entering the first park crashes at tp.exe+0xc75a0 (VA 0x4c75a0): a trivial getter `mov eax,[ecx+0xc]; ret` called with a bad `this`.
   Need the call chain (tp_debug now prints registers and return addresses on exceptions).
+
+### Crash call chain (tp_debug v6 log)
+- 0x52ef7d `call 0x4c75a0` with ecx = result of 0x50fb60: a getter on the big global object (0x7dbd54) that reads a 16-bit handle at
+  [obj+0x1da726] and looks it up in an object table at 0x7dc088 (20-byte entries). The lookup returned NULL (object never created),
+  so the park load (just after opening save\users\<n>Full Simulation\jungle\easymode.TPWI) dereferences null.
+- Next: tp_debug now reports failing file opens, to find the file that did not load.

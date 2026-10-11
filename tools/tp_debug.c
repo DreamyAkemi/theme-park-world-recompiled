@@ -65,6 +65,8 @@ static Hook CODE_HOOKS[] = {
     {NULL, "Validate@41eb80", 0, 0, K_RET, 0x41eb80},
     {NULL, "AddToSet@41e7f0", 0, 0, K_RET, 0x41e7f0},
     {NULL, "LoadRide@413a60", 0, 0, K_RET, 0x413a60},
+    {NULL, "ReportError@4056b0", 3, 0, K_PLAIN, 0x4056b0},
+    {NULL, "Lookup@401700", 1, 3, K_RET, 0x401700},
 };
 #define NAPI (sizeof H / sizeof H[0])
 #define NCODE (sizeof CODE_HOOKS / sizeof CODE_HOOKS[0])

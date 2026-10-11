@@ -69,3 +69,8 @@ Game files are never committed (see .gitignore).
 - 0x413770 enumerates a directory (vtbl FindFirst/FindNext), skips non-matching names, builds an object per entry (0x41d740),
   validates it (0x41eb80), registers it (0x41e7f0) and loads it (0x413a60); any failure returns 0.
 - tp_debug v10 logs each enumerated name and the return values of those four helpers.
+
+### minecart.wad
+- v10 log: all of bouncy..lookout load (LoadRide@413a60 returns 1); minecart.wad's LoadRide returns 0 -> ParseEntry 0 -> level load aborted -> world never created.
+- The user's Data mixes file dates: minecart.wad 2000-01-21, coaster1.wad 1999-12-09, Rides.sam 1999-10-10, tp.exe built 1999-10-25 -> the data looks newer than the exe.
+- LoadRide failure exits: 0x4140c2 via 413b65 (ride count==0x14a), 413c60 (lookup 0x401700 failed), or error reporter 0x4056b0 (code 3) paths.

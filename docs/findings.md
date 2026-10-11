@@ -101,3 +101,9 @@ Game files are never committed (see .gitignore).
 - The game loads its cursors from Data\UI\cursors\*.tga, calls ShowCursor(0) and SetCursor(handle). It uses DirectInput (DirectInputCreateA): a proxy now logs
   CreateDevice/SetDataFormat/SetCooperativeLevel/Acquire/GetDeviceState and makes the mouse non-exclusive (ini shared_mouse=1; exclusive mode hides the cursor).
 - Bug fixed during testing: the first WM_GETMINMAXINFO version capped window growth to the old size (test_ddraw caught it, 43 checks pass under Wine).
+
+### ddraw v5 (user test 4: window fine, white flashes again, Windows arrow instead of the game's cursor)
+- ddraw_log.txt: the game uses DirectInput for keyboard and mouse (mouse state data format 16 bytes), calls ShowCursor(0) + SetCursor(custom HCURSOR), and later ShowCursor(1)
+  only at shutdown. Mouse clicks arrive as WM_LBUTTONDOWN and the game advanced after one. The white arrow was my own `cursor=1` fallback overriding the game's cursor in WM_SETCURSOR.
+- v5: cursor=1 now means "show the game's own SetCursor handle over the client area and never hide it". present(why) samples the frame and logs `WHITE FRAME ... shown by <call>; last operation: <details>`
+  to find what produces full white frames (test_ddraw: 44 checks pass).

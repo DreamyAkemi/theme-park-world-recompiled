@@ -10,7 +10,7 @@
  *            fullscreen=0   1 = borderless window covering the monitor, picture letterboxed
  *            border=1       0 = no title bar in windowed mode
  *            filter=0       1 = smooth (bilinear-like) scaling, 0 = nearest neighbour
- *            cursor=0       1 = always show the Windows mouse cursor over the game window (ignore the game hiding it)
+ *            cursor=1       1 = show the game's own cursor (the one it passes to SetCursor) over the window and never hide it; 0 = leave cursor handling to the game
  *            shared_mouse=1 1 = make the game's DirectInput mouse non-exclusive (keeps the Windows cursor and normal mouse handling)
  *            log=0          1 = write every call to ddraw_log.txt
  */
@@ -27,7 +27,8 @@
 #include <algorithm>
 
 /* ------------------------------------------------------------------ config + log */
-static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0, mouse_shared = 1; } cfg;
+static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 1, mouse_shared = 1; } cfg;
+static HCURSOR g_gamecursor;
 static FILE *logf;
 static CRITICAL_SECTION cs;
 static HMODULE self_mod;
@@ -50,7 +51,7 @@ static void load_cfg() {
     cfg.border = GetPrivateProfileIntA("ddraw", "border", 1, p);
     cfg.filter = GetPrivateProfileIntA("ddraw", "filter", 0, p);
     cfg.log = GetPrivateProfileIntA("ddraw", "log", 0, p);
-    cfg.cursor = GetPrivateProfileIntA("ddraw", "cursor", 0, p);
+    cfg.cursor = GetPrivateProfileIntA("ddraw", "cursor", 1, p);
     cfg.mouse_shared = GetPrivateProfileIntA("ddraw", "shared_mouse", 1, p);
 }
 
@@ -115,7 +116,8 @@ static struct {
     bool dirty = false;
 } G;
 
-static void present();
+static void present(const char *why = "?");
+static char g_lastop[160];
 
 /* ---- host-process USER32 virtualisation: the game believes it owns a W x H screen at (0,0) ---- */
 typedef BOOL (WINAPI *PFN_GetClientRect)(HWND, LPRECT);
@@ -159,7 +161,7 @@ static int WINAPI hk_ShowCursor(BOOL show) {
     if (cfg.cursor && !show) { int c = o_ShowCursor(TRUE); return c - 1 < 0 ? c : c; }
     return o_ShowCursor(show);
 }
-static HCURSOR WINAPI hk_SetCursor(HCURSOR c) { LOGU(0x6000000u ^ (c ? 1u : 0u), "game calls SetCursor(%p)", (void *)c); if (cfg.cursor && !c) return o_SetCursor(LoadCursor(NULL, IDC_ARROW)); return o_SetCursor(c); }
+static HCURSOR WINAPI hk_SetCursor(HCURSOR c) { LOGU(0x6000000u ^ (unsigned)(ULONG_PTR)c, "game calls SetCursor(%p)", (void *)c); if (c) g_gamecursor = c; if (cfg.cursor && !c) return o_SetCursor(g_gamecursor ? g_gamecursor : LoadCursor(NULL, IDC_ARROW)); return o_SetCursor(c); }
 static BOOL WINAPI hk_MoveWindow(HWND h, int x, int y, int w, int hh, BOOL r) { if (virt_active(h)) return TRUE; return o_MoveWindow(h, x, y, w, hh, r); }
 
 
@@ -423,7 +425,7 @@ static void dest_rect(int cw, int ch, int sw, int sh, RECT *r) {
     else { int dh = cw * sh / sw; r->top = (ch - dh) / 2; r->bottom = r->top + dh; r->left = 0; r->right = cw; }
 }
 
-static void present() {
+static void present(const char *why) {
     Guard pg;
     Surface *p = G.primary;
     if (!p || !p->mem || !G.hwnd || !IsWindow(G.hwnd)) return;
@@ -438,6 +440,10 @@ static void present() {
             continue;
         }
         for (int x = 0; x < W; x++) { int r, g, b, a; unpack(p->fmt, getpx(row + x * (p->fmt.bpp / 8), p->fmt.bpp), p->pal, r, g, b, a); o[x] = (r << 16) | (g << 8) | b; }
+    }
+    if (cfg.log) {   /* diagnostic: a frame that is (almost) entirely white */
+        int white = 0, total = 0; for (int sy = 0; sy < 8; sy++) for (int sx = 0; sx < 8; sx++) { DWORD v = buf[(size_t)((sy * 2 + 1) * H / 16) * W + (sx * 2 + 1) * W / 16]; total++; if (((v >> 16) & 255) > 235 && ((v >> 8) & 255) > 235 && (v & 255) > 235) white++; }
+        static int nw, nf; nf++; if (white * 10 >= total * 9) { nw++; if (nw <= 40) LOG("WHITE FRAME #%d (frame %d) shown by %s; last operation: %s", nw, nf, why, g_lastop); }
     }
     BITMAPINFO bi; memset(&bi, 0, sizeof bi);
     bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = W; bi.bmiHeader.biHeight = -H; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
@@ -492,8 +498,8 @@ static LRESULT CALLBACK hook_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_GETMINMAXINFO: if (G.w && !cfg.fullscreen && g_winw > 0) { LRESULT r = old ? CallWindowProc(old, h, m, w, l) : DefWindowProc(h, m, w, l); MINMAXINFO *mm = (MINMAXINFO *)l; mm->ptMaxSize.x = g_winw; mm->ptMaxSize.y = g_winh; mm->ptMaxPosition.x = 0; mm->ptMaxPosition.y = 0; return r; } break;
     case WM_SIZE: if (w == SIZE_MAXIMIZED && G.w && !cfg.fullscreen) PostMessage(h, WM_APP + 0x5A, 0, 0); G.dirty = true; break;
     case WM_APP + 0x5A: if (G.w && !cfg.fullscreen) { apply_window(); return 0; } break;
-    case WM_SETCURSOR: if (cfg.cursor && LOWORD(l) == HTCLIENT) { SetCursor(LoadCursor(NULL, IDC_ARROW)); return TRUE; } break;
-    case WM_PAINT: if (G.primary) { PAINTSTRUCT ps; BeginPaint(h, &ps); EndPaint(h, &ps); present(); return 0; } break;
+    case WM_SETCURSOR: if (cfg.cursor && LOWORD(l) == HTCLIENT) { SetCursor(g_gamecursor ? g_gamecursor : LoadCursor(NULL, IDC_ARROW)); return TRUE; } break;
+    case WM_PAINT: if (G.primary) { PAINTSTRUCT ps; BeginPaint(h, &ps); EndPaint(h, &ps); present("WM_PAINT"); return 0; } break;
     case WM_NCDESTROY: SetWindowLongPtr(h, GWLP_WNDPROC, (LONG_PTR)old); G.oldproc = 0; G.hwnd = 0; return CallWindowProc(old, h, m, w, l);
     default:
         if (m >= WM_MOUSEFIRST && m <= WM_MOUSELAST && m != WM_MOUSEWHEEL && G.primary && g_client_w > 0) {
@@ -590,7 +596,7 @@ HRESULT Surface::V7::Lock(LPRECT r, LPDDSURFACEDESC2 d, DWORD lf, HANDLE) {
 }
 HRESULT Surface::V7::Unlock(LPRECT) {
     Guard l; if (s->locked <= 0) return DDERR_NOTLOCKED; s->locked--;
-    if (!s->locked && s->isprimary()) present();
+    if (!s->locked && s->isprimary()) present("Unlock(primary)");
     return DD_OK;
 }
 HRESULT Surface::V7::GetColorKey(DWORD f, LPDDCOLORKEY k) {
@@ -603,7 +609,7 @@ HRESULT Surface::V7::SetColorKey(DWORD f, LPDDCOLORKEY k) {
     else if (f & DDCKEY_DESTBLT) { s->has_dst = k != 0; if (k) s->ck_dst_blt = *k; }
     return DD_OK;
 }
-HRESULT Surface::V7::SetPalette(LPDIRECTDRAWPALETTE p) { Palette *n = (Palette *)p; if (n) n->AddRef(); if (s->pal) s->pal->Release(); s->pal = n; if (s->isprimary()) present(); return DD_OK; }
+HRESULT Surface::V7::SetPalette(LPDIRECTDRAWPALETTE p) { Palette *n = (Palette *)p; if (n) n->AddRef(); if (s->pal) s->pal->Release(); s->pal = n; if (s->isprimary()) present("SetPalette"); return DD_OK; }
 HRESULT Surface::V7::SetClipper(LPDIRECTDRAWCLIPPER c) { Clipper *n = (Clipper *)c; if (n) n->AddRef(); if (s->clip) s->clip->Release(); s->clip = n; return DD_OK; }
 
 HRESULT Surface::V7::GetDC(HDC *out) {
@@ -626,7 +632,7 @@ HRESULT Surface::V7::ReleaseDC(HDC) {
     int bpp = s->fmt.bpp, rowbytes = ((s->w * bpp + 31) / 32) * 4;
     GdiFlush();
     for (int y = 0; y < s->h; y++) memcpy(s->mem + (size_t)y * s->pitch, (BYTE *)s->dibbits + (size_t)y * rowbytes, std::min(rowbytes, s->pitch));
-    s->release_gdi(); if (s->isprimary()) present(); return DD_OK;
+    s->release_gdi(); if (s->isprimary()) present("ReleaseDC"); return DD_OK;
 }
 
 HRESULT Surface::V7::Flip(LPDIRECTDRAWSURFACE7 target, DWORD fl) {
@@ -641,7 +647,8 @@ HRESULT Surface::V7::Flip(LPDIRECTDRAWSURFACE7 target, DWORD fl) {
     BYTE *first = chain[0]->mem;
     for (size_t i = 0; i + 1 < chain.size(); i++) chain[i]->mem = chain[i + 1]->mem;
     chain.back()->mem = first;
-    if (front->isprimary()) present();
+    snprintf(g_lastop, sizeof g_lastop, "Flip");
+    if (front->isprimary()) present("Flip");
     return DD_OK;
 }
 
@@ -700,7 +707,8 @@ HRESULT Surface::V7::Blt(LPRECT d, LPDIRECTDRAWSURFACE7 src, LPRECT sr, DWORD f,
     if ((f & DDBLT_COLORFILL) && fx) LOGU(0x2000000u ^ fx->dwFillColor ^ (s->isprimary() ? 0x4000000u : 0), "  colorfill 0x%08lx on %s %dx%d", fx->dwFillColor, s->isprimary() ? "primary" : "surface", s->w, s->h);
     if (ss && cfg.log && ss->w <= 64 && ss->h <= 64) { static int n; if (n < 40) { n++; LOG("small Blt %dx%d (%s) -> %s dest=%ld,%ld flags=0x%lx", ss->w, ss->h, ss->fmt.bpp == 16 ? "16bpp" : "other", s->isprimary() ? "primary" : "surface", d ? d->left : 0, d ? d->top : 0, f); } }
     HRESULT hr = do_blit(s, d, ss, sr, f, fx, false, false);
-    if (hr == DD_OK && s->isprimary()) present();
+    if (s->isprimary() || (f & DDBLT_COLORFILL)) snprintf(g_lastop, sizeof g_lastop, "Blt dst=%s %dx%d flags=0x%lx src=%dx%d fill=0x%lx", s->isprimary() ? "primary" : "surface", s->w, s->h, f, ss ? ss->w : 0, ss ? ss->h : 0, (f & DDBLT_COLORFILL) && fx ? fx->dwFillColor : 0ul);
+    if (hr == DD_OK && s->isprimary()) present("Blt(primary)");
     return hr;
 }
 HRESULT Surface::V7::BltFast(DWORD x, DWORD y, LPDIRECTDRAWSURFACE7 src, LPRECT sr, DWORD t) {
@@ -708,7 +716,7 @@ HRESULT Surface::V7::BltFast(DWORD x, DWORD y, LPDIRECTDRAWSURFACE7 src, LPRECT 
     RECT sRect = sr ? *sr : RECT{0, 0, ss->w, ss->h}; RECT d = {(LONG)x, (LONG)y, (LONG)x + (sRect.right - sRect.left), (LONG)y + (sRect.bottom - sRect.top)};
     if (cfg.log && ss->w <= 64 && ss->h <= 64) { static int n; if (n < 40) { n++; LOG("small BltFast %dx%d -> %s at %lu,%lu trans=0x%lx", ss->w, ss->h, s->isprimary() ? "primary" : "surface", (unsigned long)x, (unsigned long)y, (unsigned long)t); } }
     HRESULT hr = do_blit(s, &d, ss, &sRect, 0, 0, (t & DDBLTFAST_SRCCOLORKEY) != 0, (t & DDBLTFAST_DESTCOLORKEY) != 0);
-    if (hr == DD_OK && s->isprimary()) present();
+    if (hr == DD_OK && s->isprimary()) present("BltFast(primary)");
     return hr;
 }
 

@@ -123,6 +123,11 @@ int main(int argc, char **argv) {
     IDirectDrawPalette *pal = NULL; CHECK(dd->CreatePalette(DDPCAPS_8BIT | DDPCAPS_ALLOW256, pe, &pal, NULL) == DD_OK, "CreatePalette");
 
     CHECK(dd->GetAvailableVidMem(NULL, NULL, NULL) == DD_OK, "GetAvailableVidMem");
+    // diagnostics: an all-white primary must be reported in the log (ini has log=1 in the test folder)
+    { DDBLTFX wf; memset(&wf, 0, sizeof wf); wf.dwSize = sizeof wf; wf.dwFillColor = 0xFFFF; prim->Blt(NULL, NULL, NULL, DDBLT_COLORFILL | DDBLT_WAIT, &wf);
+      char lp[MAX_PATH]; snprintf(lp, sizeof lp, "%s\\ddraw_log.txt", dir); FILE *f = fopen(lp, "r"); bool found = false; char line[512];
+      while (f && fgets(line, sizeof line, f)) if (strstr(line, "WHITE FRAME")) found = true; if (f) fclose(f);
+      CHECK(found, "an all-white frame is reported in ddraw_log.txt"); }
     printf("presented; holding window for screenshot\n"); fflush(stdout);
     DWORD t0 = GetTickCount(); MSG msg;
     while (GetTickCount() - t0 < (argc > 1 ? (DWORD)atoi(argv[1]) : 1500)) { while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); } Sleep(10); }

@@ -180,6 +180,24 @@ int main(int argc, char **argv) {
                     }
                     L("\n");
                 }
+                if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) {
+                    /* tp.exe specific: global world object 0x7dbd54, handle words at +0x1da720.., object table at 0x7dc088 (20-byte entries) */
+                    DWORD w = 0; SIZE_T n;
+                    ReadProcessMemory(hp, (void *)0x7dbd54, &w, 4, &n);
+                    L("      world=0x%08lx\n", w);
+                    if (w) {
+                        WORD hs[16] = {0}; ReadProcessMemory(hp, (void *)(DWORD_PTR)(w + 0x1da720), hs, sizeof hs, &n);
+                        L("      handles @+0x1da720:");
+                        for (int i = 0; i < 16; i++) L(" %04x", hs[i]);
+                        L("\n      table[handle]:");
+                        for (int i = 0; i < 16; i++) { DWORD pt = 0; ReadProcessMemory(hp, (void *)(DWORD_PTR)(0x7dc088 + 20 * (DWORD)hs[i]), &pt, 4, &n); L(" %08lx", pt); }
+                        L("\n");
+                    }
+                    DWORD tb[5 * 24] = {0}; ReadProcessMemory(hp, (void *)0x7dc088, tb, sizeof tb, &n);
+                    L("      table[0..23].ptr:"); for (int i = 0; i < 24; i++) L(" %08lx", tb[i * 5]);
+                    L("\n");
+                    DWORD f = 0; ReadProcessMemory(hp, (void *)0x77c23c, &f, 4, &n); L("      flag 0x77c23c=0x%08lx\n", f);
+                }
                 cont = DBG_EXCEPTION_NOT_HANDLED;
             }
             CloseHandle(th);

@@ -146,8 +146,11 @@ static void picture_rect(HWND h, RECT *d, int *cw, int *ch) {
 static BOOL WINAPI hk_GetClientRect(HWND h, LPRECT r) { if (virt_active(h) && r) { r->left = r->top = 0; r->right = G.pw; r->bottom = G.ph; return TRUE; } return o_GetClientRect(h, r); }
 static BOOL WINAPI hk_GetWindowRect(HWND h, LPRECT r) { if (virt_active(h) && r) { r->left = r->top = 0; r->right = G.pw; r->bottom = G.ph; return TRUE; } return o_GetWindowRect(h, r); }
 static BOOL WINAPI hk_ScreenToClient(HWND h, LPPOINT p) {
+    LONG ix = p ? p->x : 0, iy = p ? p->y : 0;
     BOOL ok = o_ScreenToClient(h, p);
+    LONG rx = p ? p->x : 0, ry = p ? p->y : 0;
     if (ok && p && virt_active(h)) { RECT d; int cw, ch; picture_rect(h, &d, &cw, &ch); int dw = d.right - d.left, dh = d.bottom - d.top; if (dw > 0 && dh > 0) { p->x = (p->x - d.left) * G.pw / dw; p->y = (p->y - d.top) * G.ph / dh; } }
+    if (cfg.log) { static int n; if (n < 25 && (ix || iy)) { n++; LOG("game ScreenToClient: screen=%ld,%ld -> client=%ld,%ld -> game=%ld,%ld", ix, iy, rx, ry, p ? p->x : 0, p ? p->y : 0); } }
     return ok;
 }
 static BOOL WINAPI hk_ClientToScreen(HWND h, LPPOINT p) {
@@ -190,7 +193,9 @@ struct WDevice : IDirectInputDeviceA {
     HRESULT STDMETHODCALLTYPE GetCapabilities(LPDIDEVCAPS c) override { return r->GetCapabilities(c); }
     HRESULT STDMETHODCALLTYPE EnumObjects(LPDIENUMDEVICEOBJECTSCALLBACKA cb, LPVOID ref_, DWORD f) override { return r->EnumObjects(cb, ref_, f); }
     HRESULT STDMETHODCALLTYPE GetProperty(REFGUID g, LPDIPROPHEADER h) override { return r->GetProperty(g, h); }
-    HRESULT STDMETHODCALLTYPE SetProperty(REFGUID g, LPCDIPROPHEADER h) override { HRESULT hr = r->SetProperty(g, h); LOG("DInput %s SetProperty(%lu) -> 0x%08lx", mouse ? "mouse" : kbd ? "keyboard" : "device", (unsigned long)(ULONG_PTR)&g, (unsigned long)hr); return hr; }
+    HRESULT STDMETHODCALLTYPE SetProperty(REFGUID g, LPCDIPROPHEADER h) override {
+        HRESULT hr = r->SetProperty(g, h); unsigned long id = (unsigned long)(ULONG_PTR)&g; unsigned long val = h && h->dwSize >= sizeof(DIPROPDWORD) ? ((const DIPROPDWORD *)h)->dwData : 0;
+        LOG("DInput %s SetProperty(id=%lu%s value=%lu) -> 0x%08lx", mouse ? "mouse" : kbd ? "keyboard" : "device", id, id == 1 ? " BUFFERSIZE" : id == 2 ? " AXISMODE(0=abs,1=rel)" : "", val, (unsigned long)hr); return hr; }
     HRESULT STDMETHODCALLTYPE Acquire() override { HRESULT hr = r->Acquire(); LOGU(0x9000000u ^ (unsigned)hr ^ (mouse ? 1u : 0), "DInput %s Acquire -> 0x%08lx (foreground=%p game window=%p)", mouse ? "mouse" : kbd ? "keyboard" : "device", (unsigned long)hr, (void *)GetForegroundWindow(), (void *)G.hwnd); return hr; }
     HRESULT STDMETHODCALLTYPE Unacquire() override { LOGU(0xA000000u ^ (mouse ? 1u : 0), "DInput %s Unacquire", mouse ? "mouse" : kbd ? "keyboard" : "device"); return r->Unacquire(); }
     HRESULT STDMETHODCALLTYPE GetDeviceState(DWORD cb, LPVOID d) override {
@@ -199,7 +204,15 @@ struct WDevice : IDirectInputDeviceA {
         else if (mouse && hr != DI_OK) LOGU(0xB000000u ^ (unsigned)hr, "DInput mouse GetDeviceState -> 0x%08lx", (unsigned long)hr);
         return hr;
     }
-    HRESULT STDMETHODCALLTYPE GetDeviceData(DWORD cb, LPDIDEVICEOBJECTDATA d, LPDWORD n, DWORD f) override { return r->GetDeviceData(cb, d, n, f); }
+    HRESULT STDMETHODCALLTYPE GetDeviceData(DWORD cb, LPDIDEVICEOBJECTDATA d, LPDWORD n, DWORD f) override {
+        HRESULT hr = r->GetDeviceData(cb, d, n, f);
+        if (mouse && cfg.log) {
+            static unsigned long calls, events, shown; calls++; DWORD got = (n && hr == DI_OK) ? *n : 0; events += got;
+            if (got && d && shown < 40) { for (DWORD i = 0; i < got && i < 3 && shown < 40; i++, shown++) LOG("DInput mouse event: offset=%lu data=%ld (%s)", (unsigned long)d[i].dwOfs, (long)d[i].dwData, d[i].dwOfs == 0 ? "X" : d[i].dwOfs == 4 ? "Y" : d[i].dwOfs == 8 ? "wheel" : "button"); }
+            if (calls == 1 || calls % 500 == 0) LOG("DInput mouse GetDeviceData: %lu calls, %lu events so far, hr=0x%08lx", calls, events, (unsigned long)hr);
+        }
+        return hr;
+    }
     HRESULT STDMETHODCALLTYPE SetDataFormat(LPCDIDATAFORMAT f) override { HRESULT hr = r->SetDataFormat(f); LOG("DInput %s SetDataFormat(objects=%lu size=%lu) -> 0x%08lx", mouse ? "mouse" : kbd ? "keyboard" : "device", f ? (unsigned long)f->dwNumObjs : 0ul, f ? (unsigned long)f->dwDataSize : 0ul, (unsigned long)hr); return hr; }
     HRESULT STDMETHODCALLTYPE SetEventNotification(HANDLE e) override { return r->SetEventNotification(e); }
     HRESULT STDMETHODCALLTYPE SetCooperativeLevel(HWND h, DWORD f) override {
@@ -492,7 +505,7 @@ static void apply_window() {
 
 static LRESULT CALLBACK hook_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     WNDPROC old = G.oldproc;
-    if (cfg.log) { static int nm; if (m == WM_MOUSEMOVE) { if (nm < 8) { nm++; LOG("WM_MOUSEMOVE client=%d,%d", (short)LOWORD(l), (short)HIWORD(l)); } } else if (m == WM_SETCURSOR || m == WM_ACTIVATE || m == WM_ACTIVATEAPP || m == WM_KILLFOCUS || m == WM_SETFOCUS || m == WM_LBUTTONDOWN || m == WM_SIZE) LOGU(0x7000000u ^ m ^ ((unsigned)w << 8), "WM 0x%04x wparam=0x%lx lparam=0x%lx", m, (unsigned long)w, (unsigned long)l); }
+    if (cfg.log) { static int nm; static unsigned long total_mm; if (m == WM_MOUSEMOVE) { total_mm++; if (total_mm % 1000 == 0) LOG("%lu WM_MOUSEMOVE messages so far", total_mm); if (nm < 8) { nm++; LOG("WM_MOUSEMOVE client=%d,%d", (short)LOWORD(l), (short)HIWORD(l)); } } else if (m == WM_SETCURSOR || m == WM_ACTIVATE || m == WM_ACTIVATEAPP || m == WM_KILLFOCUS || m == WM_SETFOCUS || m == WM_LBUTTONDOWN || m == WM_SIZE) LOGU(0x7000000u ^ m ^ ((unsigned)w << 8), "WM 0x%04x wparam=0x%lx lparam=0x%lx", m, (unsigned long)w, (unsigned long)l); }
     switch (m) {
     case WM_ERASEBKGND: if (G.primary) return 1; break;
     case WM_GETMINMAXINFO: if (G.w && !cfg.fullscreen && g_winw > 0) { LRESULT r = old ? CallWindowProc(old, h, m, w, l) : DefWindowProc(h, m, w, l); MINMAXINFO *mm = (MINMAXINFO *)l; mm->ptMaxSize.x = g_winw; mm->ptMaxSize.y = g_winh; mm->ptMaxPosition.x = 0; mm->ptMaxPosition.y = 0; return r; } break;
@@ -705,7 +718,7 @@ HRESULT Surface::V7::Blt(LPRECT d, LPDIRECTDRAWSURFACE7 src, LPRECT sr, DWORD f,
     Guard l; Surface *ss = src ? ((V7 *)src)->s : 0;
     LOGU(0x1000000u ^ f ^ (s->isprimary() ? 0x80000000u : 0), "Blt dst=%s flags=0x%lx src=%s%s", s->isprimary() ? "primary" : "surface", f, ss ? (ss->isprimary() ? "primary" : "surface") : "none", (f & DDBLT_COLORFILL) && fx ? "" : "");
     if ((f & DDBLT_COLORFILL) && fx) LOGU(0x2000000u ^ fx->dwFillColor ^ (s->isprimary() ? 0x4000000u : 0), "  colorfill 0x%08lx on %s %dx%d", fx->dwFillColor, s->isprimary() ? "primary" : "surface", s->w, s->h);
-    if (ss && cfg.log && ss->w <= 64 && ss->h <= 64) { static int n; if (n < 40) { n++; LOG("small Blt %dx%d (%s) -> %s dest=%ld,%ld flags=0x%lx", ss->w, ss->h, ss->fmt.bpp == 16 ? "16bpp" : "other", s->isprimary() ? "primary" : "surface", d ? d->left : 0, d ? d->top : 0, f); } }
+    if (ss && cfg.log && ss->w <= 64 && ss->h <= 64) { static int n; if (n < 200) { n++; LOG("small Blt %dx%d (%s) -> %s dest=%ld,%ld flags=0x%lx", ss->w, ss->h, ss->fmt.bpp == 16 ? "16bpp" : "other", s->isprimary() ? "primary" : "surface", d ? d->left : 0, d ? d->top : 0, f); } }
     HRESULT hr = do_blit(s, d, ss, sr, f, fx, false, false);
     if (s->isprimary() || (f & DDBLT_COLORFILL)) snprintf(g_lastop, sizeof g_lastop, "Blt dst=%s %dx%d flags=0x%lx src=%dx%d fill=0x%lx", s->isprimary() ? "primary" : "surface", s->w, s->h, f, ss ? ss->w : 0, ss ? ss->h : 0, (f & DDBLT_COLORFILL) && fx ? fx->dwFillColor : 0ul);
     if (hr == DD_OK && s->isprimary()) present("Blt(primary)");
@@ -714,7 +727,7 @@ HRESULT Surface::V7::Blt(LPRECT d, LPDIRECTDRAWSURFACE7 src, LPRECT sr, DWORD f,
 HRESULT Surface::V7::BltFast(DWORD x, DWORD y, LPDIRECTDRAWSURFACE7 src, LPRECT sr, DWORD t) {
     Guard l; Surface *ss = src ? ((V7 *)src)->s : 0; if (!ss) return DDERR_INVALIDPARAMS;
     RECT sRect = sr ? *sr : RECT{0, 0, ss->w, ss->h}; RECT d = {(LONG)x, (LONG)y, (LONG)x + (sRect.right - sRect.left), (LONG)y + (sRect.bottom - sRect.top)};
-    if (cfg.log && ss->w <= 64 && ss->h <= 64) { static int n; if (n < 40) { n++; LOG("small BltFast %dx%d -> %s at %lu,%lu trans=0x%lx", ss->w, ss->h, s->isprimary() ? "primary" : "surface", (unsigned long)x, (unsigned long)y, (unsigned long)t); } }
+    if (cfg.log && ss->w <= 64 && ss->h <= 64) { static int n; if (n < 200) { n++; LOG("small BltFast %dx%d -> %s at %lu,%lu trans=0x%lx", ss->w, ss->h, s->isprimary() ? "primary" : "surface", (unsigned long)x, (unsigned long)y, (unsigned long)t); } }
     HRESULT hr = do_blit(s, &d, ss, &sRect, 0, 0, (t & DDBLTFAST_SRCCOLORKEY) != 0, (t & DDBLTFAST_DESTCOLORKEY) != 0);
     if (hr == DD_OK && s->isprimary()) present("BltFast(primary)");
     return hr;

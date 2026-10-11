@@ -107,3 +107,8 @@ Game files are never committed (see .gitignore).
   only at shutdown. Mouse clicks arrive as WM_LBUTTONDOWN and the game advanced after one. The white arrow was my own `cursor=1` fallback overriding the game's cursor in WM_SETCURSOR.
 - v5: cursor=1 now means "show the game's own SetCursor handle over the client area and never hide it". present(why) samples the frame and logs `WHITE FRAME ... shown by <call>; last operation: <details>`
   to find what produces full white frames (test_ddraw: 44 checks pass).
+
+### ddraw v6 (user test 5: flashes gone; intro skip click works; menu mouse dead; odd round cursor with a cross)
+- Likely the game's "Cnog" (no-go) cursor from Data\UI\cursors: the game thinks the pointer is invalid in the menu. Intro clicks arrive as WM_LBUTTONDOWN, so
+  the menu must derive position another way (DInput buffered relative data, MSG.pt + ScreenToClient, ...). v6 logs: DInput property ids/values, buffered mouse events,
+  ScreenToClient calls (screen -> client -> game coordinates), mapped WM_MOUSEMOVE values, and up to 200 small Blt/BltFast calls.

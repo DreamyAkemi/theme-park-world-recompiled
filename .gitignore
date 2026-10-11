@@ -1,0 +1,15 @@
+# Never commit game files or derived binaries
+*.exe
+*.dll
+*.icd
+*.ICD
+*.sys
+*.016
+*.256
+*.vol
+*.zip
+*.bin
+*.dmp
+game/
+work/
+__pycache__/

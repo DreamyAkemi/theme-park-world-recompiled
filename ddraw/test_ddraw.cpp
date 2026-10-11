@@ -35,7 +35,8 @@ int main(int argc, char **argv) {
     CHECK(dd->SetCooperativeLevel(hw, DDSCL_EXCLUSIVE | DDSCL_FULLSCREEN | DDSCL_ALLOWMODEX | DDSCL_FPUSETUP) == DD_OK, "SetCooperativeLevel");
     CHECK(dd->SetDisplayMode(640, 480, 16, 0, 0) == DD_OK, "SetDisplayMode 640x480x16");
     DDSURFACEDESC2 cur; memset(&cur, 0, sizeof cur); cur.dwSize = sizeof cur;
-    CHECK(dd->GetDisplayMode(&cur) == DD_OK && cur.dwWidth == 640 && cur.ddpfPixelFormat.dwRGBBitCount == 16, "GetDisplayMode reports 640x480x16");
+    int ew = argc > 2 ? atoi(argv[2]) : 640, eh = argc > 3 ? atoi(argv[3]) : 480;
+    CHECK(dd->GetDisplayMode(&cur) == DD_OK && (int)cur.dwWidth == ew && (int)cur.dwHeight == eh && cur.ddpfPixelFormat.dwRGBBitCount == 16, "GetDisplayMode reports the expected mode");
 
     DDSURFACEDESC2 sd; memset(&sd, 0, sizeof sd); sd.dwSize = sizeof sd;
     sd.dwFlags = DDSD_CAPS | DDSD_BACKBUFFERCOUNT; sd.dwBackBufferCount = 1;
@@ -45,8 +46,8 @@ int main(int argc, char **argv) {
     IDirectDrawSurface7 *back = NULL; CHECK(prim->GetAttachedSurface(&caps, &back) == DD_OK && back, "GetAttachedSurface(BACKBUFFER)");
 
     // the game's view of the window must be the display mode, whatever the real window size is
-    RECT cr; GetClientRect(hw, &cr); CHECK(cr.right == 640 && cr.bottom == 480, "hooked GetClientRect reports 640x480");
-    CHECK(GetSystemMetrics(SM_CXSCREEN) == 640 && GetSystemMetrics(SM_CYSCREEN) == 480, "hooked GetSystemMetrics reports the display mode");
+    RECT cr; GetClientRect(hw, &cr); CHECK(cr.right == ew && cr.bottom == eh, "hooked GetClientRect reports the display mode");
+    CHECK(GetSystemMetrics(SM_CXSCREEN) == ew && GetSystemMetrics(SM_CYSCREEN) == eh, "hooked GetSystemMetrics reports the display mode");
     BOOL (WINAPI *realGCR0)(HWND, LPRECT) = (BOOL (WINAPI *)(HWND, LPRECT))GetProcAddress(GetModuleHandleA("user32.dll"), "GetClientRect"); { RECT b4; realGCR0(hw, &b4); printf("      real client before game SetWindowPos: %ldx%ld\n", b4.right, b4.bottom); }
     SetWindowPos(hw, NULL, 5, 5, 123, 77, SWP_NOZORDER); RECT rr; BOOL (WINAPI *realGCR)(HWND, LPRECT) = (BOOL (WINAPI *)(HWND, LPRECT))GetProcAddress(GetModuleHandleA("user32.dll"), "GetClientRect"); realGCR(hw, &rr);
     CHECK(rr.right > 300, "game's SetWindowPos on the owned window is ignored");

@@ -13,6 +13,8 @@
  *            synth_mouse=1  1 = give the game's DirectInput mouse data computed from the real pointer (correct at any scale); 0 = pass the real device through
  *            cursor=0       1 = show the game's own cursor (the one it passes to SetCursor) over the window and never hide it; 0 = leave cursor handling to the game
  *            shared_mouse=1 1 = make the game's DirectInput mouse non-exclusive (keeps the Windows cursor and normal mouse handling)
+ *            force_width / force_height / force_from_width / force_from_height
+ *                           EXPERIMENT: when the game asks for a display mode (only the 'from' size if given), use this size instead
  *            log=0          1 = write every call to ddraw_log.txt
  */
 #define WIN32_LEAN_AND_MEAN
@@ -28,7 +30,7 @@
 #include <algorithm>
 
 /* ------------------------------------------------------------------ config + log */
-static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0, mouse_shared = 1, synth_mouse = 1; } cfg;
+static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0, mouse_shared = 1, synth_mouse = 1, force_w = 0, force_h = 0, from_w = 0, from_h = 0; } cfg;
 static HCURSOR g_gamecursor;
 static FILE *logf;
 static CRITICAL_SECTION cs;
@@ -55,6 +57,8 @@ static void load_cfg() {
     cfg.cursor = GetPrivateProfileIntA("ddraw", "cursor", 0, p);
     cfg.mouse_shared = GetPrivateProfileIntA("ddraw", "shared_mouse", 1, p);
     cfg.synth_mouse = GetPrivateProfileIntA("ddraw", "synth_mouse", 1, p);
+    cfg.force_w = GetPrivateProfileIntA("ddraw", "force_width", 0, p); cfg.force_h = GetPrivateProfileIntA("ddraw", "force_height", 0, p);
+    cfg.from_w = GetPrivateProfileIntA("ddraw", "force_from_width", 0, p); cfg.from_h = GetPrivateProfileIntA("ddraw", "force_from_height", 0, p);
 }
 
 /* ------------------------------------------------------------------ pixel formats */
@@ -894,6 +898,7 @@ HRESULT DDraw::V7::SetCooperativeLevel(HWND h, DWORD f) {
 HRESULT DDraw::V7::SetDisplayMode(DWORD w, DWORD h, DWORD bpp, DWORD, DWORD) {
     Guard l; LOG("SetDisplayMode %lux%lux%lu", w, h, bpp);
     if (!w || !h || (bpp != 8 && bpp != 15 && bpp != 16 && bpp != 24 && bpp != 32)) return DDERR_INVALIDMODE;
+    if (cfg.force_w > 0 && cfg.force_h > 0 && (!cfg.from_w || (cfg.from_w == (int)w && cfg.from_h == (int)h))) { LOG("mode override: game asked for %lux%lu, using %dx%d", w, h, cfg.force_w, cfg.force_h); w = cfg.force_w; h = cfg.force_h; }
     G.w = w; G.h = h; G.bpp = bpp; apply_window();
     return DD_OK;
 }

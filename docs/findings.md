@@ -121,3 +121,8 @@ Game files are never committed (see .gitignore).
   buttons from GetAsyncKeyState, wheel from WM_MOUSEWHEEL; only while the game window is foreground and the pointer is over the picture. After each Acquire it first sends
   (-3000,-3000) then the pointer position so the game's cursor lands exactly under the real pointer (works for both GetDeviceState and GetDeviceData; honours cbObjectData stride).
 - test_ddraw: 52 checks pass under Wine (snap sequence, 20 real px at scale 2 = 10 game px, buffered 16-byte records). cursor default is 0 again (honour ShowCursor/SetCursor).
+
+### Resolution / widescreen groundwork
+- User confirmed Data\Resolution.sam (renamed from _Resolution.sam) with Res.RESOLUTION 4/6/7 works with our layer (window scaled by scale=0).
+- No literal preset table found by static search (sizes are probably immediates in code). Experiment added to ddraw: force_width/force_height (+force_from_*) substitute a different
+  display mode, to learn whether the engine sizes its buffers and projection from the real surface/mode dimensions (-> widescreen possible without exe changes) or from its own presets.

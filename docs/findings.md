@@ -45,3 +45,9 @@ Game files are never committed (see .gitignore).
   SetCooperativeLevel(hwnd, 0x851) (+0x50); SetDisplayMode(640,480,16,0,0) (+0x54); CreateSurface with a 0x7c-byte DDSURFACEDESC2 (+0x18).
 - Win11's built-in ddraw returns E_NOTIMPL (0x80004001) for one of these. Plan: shim ddraw with cnc-ddraw (or dgVoodoo2); long term
   a small ddraw replacement of our own is the natural place for widescreen / scaling.
+
+## First park crash (with cnc-ddraw)
+- cnc-ddraw has no Direct3D, so the game logs "Initializing Direct3D ... FAILED (80004005)" and uses its MMX software renderer
+  (engine log: "Software renderer initialized succesfully", 640x480x16). That is fine.
+- Entering the first park crashes at tp.exe+0xc75a0 (VA 0x4c75a0): a trivial getter `mov eax,[ecx+0xc]; ret` called with a bad `this`.
+  Need the call chain (tp_debug now prints registers and return addresses on exceptions).

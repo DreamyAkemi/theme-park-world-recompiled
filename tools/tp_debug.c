@@ -147,7 +147,25 @@ int main(int argc, char **argv) {
             } else if (r->ExceptionCode == EXCEPTION_BREAKPOINT) {
                 /* initial loader breakpoint */
             } else {
-                L("[exception] code=0x%08lx addr=%p first=%lu\n", r->ExceptionCode, r->ExceptionAddress, e.u.Exception.dwFirstChance);
+                L("[exception] code=0x%08lx addr=%p first=%lu", r->ExceptionCode, r->ExceptionAddress, e.u.Exception.dwFirstChance);
+                if (r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2)
+                    L(" %s 0x%08lx", r->ExceptionInformation[0] == 0 ? "read" : r->ExceptionInformation[0] == 1 ? "write" : "exec", (unsigned long)r->ExceptionInformation[1]);
+                L("\n      eax=%08lx ebx=%08lx ecx=%08lx edx=%08lx esi=%08lx edi=%08lx ebp=%08lx esp=%08lx\n",
+                  c.Eax, c.Ebx, c.Ecx, c.Edx, c.Esi, c.Edi, c.Ebp, c.Esp);
+                {
+                    DWORD sk[256] = {0}; SIZE_T n;
+                    ReadProcessMemory(hp, (void *)(DWORD_PTR)c.Esp, sk, sizeof sk, &n);
+                    L("      stack:"); for (int i = 0; i < 12; i++) L(" %08lx", sk[i]);
+                    L("\n      tp.exe return addresses:");
+                    for (int i = 0; i < 256; i++) if (sk[i] >= 0x401000 && sk[i] < 0xf85000) L(" 0x%08lx", sk[i]);
+                    L("\n");
+                    DWORD fr[2] = {0}, ebp = c.Ebp; L("      frame chain:");
+                    for (int d = 0; d < 24 && ebp; d++) {
+                        if (!ReadProcessMemory(hp, (void *)(DWORD_PTR)ebp, fr, 8, &n) || n < 8) break;
+                        L(" 0x%08lx", fr[1]); if (fr[0] <= ebp) break; ebp = fr[0];
+                    }
+                    L("\n");
+                }
                 cont = DBG_EXCEPTION_NOT_HANDLED;
             }
             CloseHandle(th);

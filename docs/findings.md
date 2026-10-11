@@ -132,3 +132,10 @@ Game files are never committed (see .gitignore).
   The file (dated 2000-01-21) belongs to a later patch; this tp.exe is the 1999-10-25 build. Same data/exe version mismatch as minecart.wad and weachatr.dll.
 - The data does contain per-resolution UI art: Data\Init\{400,512,640,800,1024}. The earlier force_from=1024x768 experiment therefore never triggered; use force_from=640x480.
 - ddraw v9: window title shows "[display mode WxH]" so the effective mode is visible.
+
+## Resolution selector (found in tp.exe 1999-10-25)
+The engine does support many sizes. The function around 0x448f00 picks width (-> 0x7b5098) and height (-> 0x7b5060) from
+command-line style flags (0x7b51bc: 160x120 ... 1600x1200) or from setting 0x783fd4 (0=512x384, 2=800x600, else 640x480).
+Those become the DirectDraw mode (via 0x559070 -> 0x559220) and the camera setup at 0x57a0d0, which derives the aspect ratio
+from width/height. ddraw.dll can therefore patch the three `mov eax,W / mov ecx,H` blocks (0x449023, 0x44903e, 0x44904f)
+at load time (ini: width/height). Untested: UI layout and FOV at sizes other than the stock ones.

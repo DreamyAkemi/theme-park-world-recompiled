@@ -30,7 +30,7 @@
 #include <algorithm>
 
 /* ------------------------------------------------------------------ config + log */
-static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0, mouse_shared = 1, synth_mouse = 1, force_w = 0, force_h = 0, from_w = 0, from_h = 0; } cfg;
+static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0, mouse_shared = 1, synth_mouse = 1, force_w = 0, force_h = 0, from_w = 0, from_h = 0, width = 0, height = 0; } cfg;
 static HCURSOR g_gamecursor;
 static FILE *logf;
 static CRITICAL_SECTION cs;
@@ -57,6 +57,7 @@ static void load_cfg() {
     cfg.cursor = GetPrivateProfileIntA("ddraw", "cursor", 0, p);
     cfg.mouse_shared = GetPrivateProfileIntA("ddraw", "shared_mouse", 1, p);
     cfg.synth_mouse = GetPrivateProfileIntA("ddraw", "synth_mouse", 1, p);
+    cfg.width = GetPrivateProfileIntA("ddraw", "width", 0, p); cfg.height = GetPrivateProfileIntA("ddraw", "height", 0, p);
     cfg.force_w = GetPrivateProfileIntA("ddraw", "force_width", 0, p); cfg.force_h = GetPrivateProfileIntA("ddraw", "force_height", 0, p);
     cfg.from_w = GetPrivateProfileIntA("ddraw", "force_from_width", 0, p); cfg.from_h = GetPrivateProfileIntA("ddraw", "force_from_height", 0, p);
 }
@@ -1010,7 +1011,22 @@ HRESULT WINAPI DllCanUnloadNow() { return S_FALSE; }
 HRESULT WINAPI DllGetClassObject(REFCLSID, REFIID, LPVOID *o) { *o = 0; return CLASS_E_CLASSNOTAVAILABLE; }
 }
 
+/* EXPERIMENT: make the engine's own resolution selector (tp.exe 1999-10-25, function around 0x448f00) pick width x height.
+ * Each size block is "mov eax,W / mov ecx,H"; we only touch a block if it still holds the original bytes. */
+static void patch_resolution() {
+    if (cfg.width < 320 || cfg.height < 240) return;
+    static const struct { DWORD va; DWORD w, h; } blk[] = { {0x449023, 512, 384}, {0x44903e, 800, 600}, {0x44904f, 640, 480} };
+    for (auto &b : blk) {
+        BYTE *p = (BYTE *)(uintptr_t)b.va;
+        if (IsBadReadPtr(p, 10) || p[0] != 0xB8 || p[5] != 0xB9 || *(DWORD *)(p + 1) != b.w || *(DWORD *)(p + 6) != b.h) { LOG("resolution patch: block %x does not match, skipped", b.va); continue; }
+        DWORD old; VirtualProtect(p, 10, PAGE_EXECUTE_READWRITE, &old);
+        *(DWORD *)(p + 1) = cfg.width; *(DWORD *)(p + 6) = cfg.height;
+        VirtualProtect(p, 10, old, &old); FlushInstructionCache(GetCurrentProcess(), p, 10);
+        LOG("resolution patch: block %x -> %dx%d", b.va, cfg.width, cfg.height);
+    }
+}
+
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) { self_mod = h; DisableThreadLibraryCalls(h); InitializeCriticalSection(&cs); load_cfg(); }
+    if (reason == DLL_PROCESS_ATTACH) { self_mod = h; DisableThreadLibraryCalls(h); InitializeCriticalSection(&cs); load_cfg(); patch_resolution(); }
     return TRUE;
 }

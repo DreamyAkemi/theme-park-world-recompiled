@@ -57,3 +57,8 @@ Game files are never committed (see .gitignore).
   [obj+0x1da726] and looks it up in an object table at 0x7dc088 (20-byte entries). The lookup returned NULL (object never created),
   so the park load (just after opening save\users\<n>Full Simulation\jungle\easymode.TPWI) dereferences null.
 - Next: tp_debug now reports failing file opens, to find the file that did not load.
+
+### World object never initialised (tp_debug v8 log)
+- At the crash the world object (0x7dbd54 -> heap) has all handle words at +0x1da720 equal to 0 and the object table at 0x7dc088 is empty,
+  i.e. World::Init (0x50bbc0) never ran. It is called from LoadLevel (0x407d70) only if 0x412f80 (level descriptor load: runs 0x421150 name lookups
+  and 0x413770 per entry) returns non-zero. tp_debug v9 hooks these and logs arguments and return values.

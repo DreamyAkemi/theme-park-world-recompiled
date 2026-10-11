@@ -47,6 +47,8 @@ static Hook H[] = {
 #define NH (sizeof H / sizeof H[0])
 
 static HANDLE hp;
+static DWORD post_addr, post_type, post_data, post_cb; static BYTE post_orig; static int post_on;
+
 static char *rdstr(DWORD a, char *buf, int n) {
     SIZE_T r = 0; memset(buf, 0, n);
     if (!a || !ReadProcessMemory(hp, (void *)(DWORD_PTR)a, buf, n - 1, &r)) strcpy(buf, "?");
@@ -104,7 +106,17 @@ int main(int argc, char **argv) {
             int hit = -1;
             if (r->ExceptionCode == EXCEPTION_BREAKPOINT)
                 for (size_t i = 0; i < NH; i++) if (H[i].on && (DWORD)(DWORD_PTR)r->ExceptionAddress == H[i].addr) hit = (int)i;
-            if (hit >= 0) {
+            if (hit < 0 && post_on && r->ExceptionCode == EXCEPTION_BREAKPOINT && (DWORD)(DWORD_PTR)r->ExceptionAddress == post_addr) {
+                SIZE_T n; DWORD ty = 0, cb = 0; BYTE dat[64] = {0};
+                if (post_type) ReadProcessMemory(hp, (void *)(DWORD_PTR)post_type, &ty, 4, &n);
+                if (post_cb) ReadProcessMemory(hp, (void *)(DWORD_PTR)post_cb, &cb, 4, &n);
+                if (post_data) ReadProcessMemory(hp, (void *)(DWORD_PTR)post_data, dat, cb < 63 ? cb : 63, &n);
+                char hex[200] = ""; for (DWORD i = 0; i < (cb < 24 ? cb : 24); i++) sprintf(hex + strlen(hex), "%02x ", dat[i]);
+                L("      -> result=%lu type=%lu cb=%lu data=[%s] \"%.40s\"\n", c.Eax, ty, cb, hex, dat);
+                WriteProcessMemory(hp, (void *)(DWORD_PTR)post_addr, &post_orig, 1, &n);
+                FlushInstructionCache(hp, (void *)(DWORD_PTR)post_addr, 1);
+                c.Eip = post_addr; SetThreadContext(th, &c); post_on = 0;
+            } else if (hit >= 0) {
                 DWORD st[8] = {0}; SIZE_T n; ReadProcessMemory(hp, (void *)(DWORD_PTR)c.Esp, st, sizeof st, &n);
                 char s1[260] = "", s2[260] = "";
                 if (H[hit].strarg) rdstr(st[H[hit].strarg], s1, sizeof s1);
@@ -117,6 +129,16 @@ int main(int argc, char **argv) {
                     L("      tp.exe addresses on stack:");
                     for (int i = 0; i < 64; i++) if (s3[i] >= 0x401000 && s3[i] < 0xf85000) L(" 0x%08lx", s3[i]);
                     L("\n");
+                }
+                if (!strcmp(H[hit].fn, "RegQueryValueExA")) {
+                    DWORD s3[96] = {0}; ReadProcessMemory(hp, (void *)(DWORD_PTR)c.Esp, s3, sizeof s3, &n);
+                    L("      chain:"); for (int i = 0; i < 96; i++) if (s3[i] >= 0x401000 && s3[i] < 0xf85000) L(" 0x%08lx", s3[i]);
+                    DWORD cbv = 0; ReadProcessMemory(hp, (void *)(DWORD_PTR)st[6], &cbv, 4, &n);
+                    L("\n      bufsize=%lu\n", cbv);
+                    post_addr = st[0]; post_type = st[4]; post_data = st[5]; post_cb = st[6];
+                    if (!post_on) { ReadProcessMemory(hp, (void *)(DWORD_PTR)post_addr, &post_orig, 1, &n);
+                        BYTE cc = 0xCC; WriteProcessMemory(hp, (void *)(DWORD_PTR)post_addr, &cc, 1, &n);
+                        FlushInstructionCache(hp, (void *)(DWORD_PTR)post_addr, 1); post_on = 1; }
                 }
                 disarm(&H[hit]);
                 c.Eip = H[hit].addr; c.EFlags |= 0x100; /* single step, then re-arm */

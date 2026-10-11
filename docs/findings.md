@@ -18,3 +18,10 @@ Game files are never committed (see .gitignore).
   values (slot 0 zeroed); all other DLL imports are normal. In the crashed process those slots were still unresolved.
 - `tools/fix_iat.py` rewrites every IAT slot to equal its import-name-table entry (like a normal unbound exe). 638 bytes change.
 - Open question: why the Win11 loader leaves those two descriptors unsnapped. Untested until the user runs the patched exe.
+
+## Startup path after the IAT fix (tp_debug traces)
+- Game reads HKLM\SOFTWARE\WOW6432Node\Bullfrog Productions Ltd\Theme Park World, value `Language` as a 4-byte DWORD (bufsize=4).
+  A REG_SZ there makes the game exit immediately (exit from WinMain, garbage exit code).
+- With no value it falls back to the system locale (French on the user's PC) and exits when Data\Language\French is missing.
+- The user's copy has per-language folders only at the CD root (English/French/...), not under Data\Language;
+  need the contents of those folders to know what the installer copies where.

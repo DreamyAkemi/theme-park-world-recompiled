@@ -139,3 +139,9 @@ command-line style flags (0x7b51bc: 160x120 ... 1600x1200) or from setting 0x783
 Those become the DirectDraw mode (via 0x559070 -> 0x559220) and the camera setup at 0x57a0d0, which derives the aspect ratio
 from width/height. ddraw.dll can therefore patch the three `mov eax,W / mov ecx,H` blocks (0x449023, 0x44903e, 0x44904f)
 at load time (ini: width/height). Untested: UI layout and FOV at sizes other than the stock ones.
+
+## Patched tp.exe (sha256 D0399ACF...) resolution table
+Resolution.sam is read as an index into a table (selector around 0x44a03f): 1=512x384, 2=640x480 (default), 3=800x600,
+4=1024x768, 5=1280x1024, 6=1600x1200, 7=2048x1536. Width/height are stored at 0x7a1968/0x7a1930 from immediates;
+index 7 sits at 0x44a0ed (two `c7 05 addr imm32`). ddraw.dll rewrites those immediates from ddraw.ini width/height.
+UI art is picked by width bucket (function ~0x41a5a0: <=512, <=640, <=800, else the largest set).

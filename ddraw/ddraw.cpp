@@ -1036,7 +1036,21 @@ static void patch_ui_folder() {
     LOG("ui folder patch: using Data\\Init\\%d", cfg.ui_width);
 }
 
+/* tp.exe with sha256 D0399ACF... (the patched build): Resolution.sam index 7 is 2048x1536 in a block
+ *   c7 05 <&width> <W>  c7 05 <&height> <H>   at 0x44a0ed. Turn it into width x height from the ini. */
+static void patch_resolution_v2() {
+    if (cfg.width < 320 || cfg.height < 240) return;
+    BYTE *p = (BYTE *)(uintptr_t)0x44a0ed;
+    static const BYTE orig[20] = { 0xC7,0x05,0x68,0x19,0x7A,0x00, 0x00,0x08,0x00,0x00, 0xC7,0x05,0x30,0x19,0x7A,0x00, 0x00,0x06,0x00,0x00 };
+    if (IsBadReadPtr(p, 20) || memcmp(p, orig, 20)) return;
+    DWORD old; VirtualProtect(p, 20, PAGE_EXECUTE_READWRITE, &old);
+    *(DWORD *)(p + 6) = cfg.width; *(DWORD *)(p + 16) = cfg.height;
+    VirtualProtect(p, 20, old, &old); FlushInstructionCache(GetCurrentProcess(), p, 20);
+    LOG("resolution patch (patched exe): Resolution.sam=7 -> %dx%d", cfg.width, cfg.height);
+}
+
 static void patch_resolution() {
+    patch_resolution_v2();
     patch_ui_folder();
     if (cfg.width < 320 || cfg.height < 240) return;
     static const struct { DWORD va; DWORD w, h; } blk[] = { {0x449023, 512, 384}, {0x44903e, 800, 600}, {0x44904f, 640, 480} };

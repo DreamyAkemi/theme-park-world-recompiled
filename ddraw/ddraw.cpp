@@ -484,7 +484,8 @@ static bool same_fmt(const Fmt &a, const Fmt &b) { return a.bpp == b.bpp && a.rm
 
 /* ------------------------------------------------------------------ presentation */
 static int g_client_w, g_client_h;
-static int g_winw, g_winh;   /* outer size the window should have (windowed mode) */
+static int g_winw, g_winh;
+static char g_basetitle[200];   /* outer size the window should have (windowed mode) */
 static LRESULT CALLBACK hook_proc(HWND h, UINT m, WPARAM w, LPARAM l);
 
 static void dest_rect(int cw, int ch, int sw, int sh, RECT *r) {
@@ -554,6 +555,10 @@ static void apply_window() {
     g_winw = ww; g_winh = wh;
     LOG("apply_window: client %dx%d, window %dx%d at %d,%d (monitor work area %ldx%ld)", cwid, chei, ww, wh, x, y, mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top);
     (o_SetWindowPos ? o_SetWindowPos : SetWindowPos)(h, HWND_NOTOPMOST, x, y, ww, wh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    if (cfg.border) {   /* show the game's display mode in the title bar (useful when testing resolutions) */
+        if (!g_basetitle[0]) { GetWindowTextA(h, g_basetitle, sizeof g_basetitle - 40); char *b = strstr(g_basetitle, "  ["); if (b) *b = 0; if (!g_basetitle[0]) strcpy(g_basetitle, "Theme Park World"); }
+        char t[260]; snprintf(t, sizeof t, "%s  [display mode %dx%d]", g_basetitle, G.w, G.h); SetWindowTextA(h, t);
+    }
     SetForegroundWindow(h); SetFocus(h); SetActiveWindow(h);
 }
 

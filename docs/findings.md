@@ -126,3 +126,9 @@ Game files are never committed (see .gitignore).
 - User confirmed Data\Resolution.sam (renamed from _Resolution.sam) with Res.RESOLUTION 4/6/7 works with our layer (window scaled by scale=0).
 - No literal preset table found by static search (sizes are probably immediates in code). Experiment added to ddraw: force_width/force_height (+force_from_*) substitute a different
   display mode, to learn whether the engine sizes its buffers and projection from the real surface/mode dimensions (-> widescreen possible without exe changes) or from its own presets.
+
+### Resolution.sam is not read by this exe
+- `strings tp.exe | grep -ci resolution` = 0 and no log ever shows the game opening Resolution.sam; every ddraw_log shows SetDisplayMode 640x480x16 only.
+  The file (dated 2000-01-21) belongs to a later patch; this tp.exe is the 1999-10-25 build. Same data/exe version mismatch as minecart.wad and weachatr.dll.
+- The data does contain per-resolution UI art: Data\Init\{400,512,640,800,1024}. The earlier force_from=1024x768 experiment therefore never triggered; use force_from=640x480.
+- ddraw v9: window title shows "[display mode WxH]" so the effective mode is visible.

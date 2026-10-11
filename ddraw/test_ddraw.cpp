@@ -63,7 +63,31 @@ int main(int argc, char **argv) {
     // DirectInput mouse: exclusive request must work through the proxy (and be downgraded to shared)
     { LPDIRECTINPUTA di = NULL; HRESULT hr = DirectInputCreateA(GetModuleHandle(NULL), 0x0500, &di, NULL); CHECK(hr == DI_OK && di, "DirectInputCreateA through the proxy");
       LPDIRECTINPUTDEVICEA ms = NULL; if (di) hr = di->CreateDevice(GUID_SysMouse, &ms, NULL); CHECK(di && hr == DI_OK && ms, "CreateDevice(mouse)");
-      if (ms) { CHECK(ms->SetDataFormat(&c_dfDIMouse) == DI_OK, "mouse SetDataFormat"); hr = ms->SetCooperativeLevel(hw, DISCL_EXCLUSIVE | DISCL_FOREGROUND); printf("      mouse SetCooperativeLevel(exclusive) -> 0x%08lx\n", (unsigned long)hr); CHECK(hr == DI_OK, "mouse SetCooperativeLevel accepted"); ms->Release(); }
+      if (ms) { CHECK(ms->SetDataFormat(&c_dfDIMouse) == DI_OK, "mouse SetDataFormat"); hr = ms->SetCooperativeLevel(hw, DISCL_EXCLUSIVE | DISCL_FOREGROUND); printf("      mouse SetCooperativeLevel(exclusive) -> 0x%08lx\n", (unsigned long)hr); CHECK(hr == DI_OK, "mouse SetCooperativeLevel accepted");
+        // synthetic mouse: put the real pointer on the centre of the picture, then poll
+        SetForegroundWindow(hw); { MSG m3; for (int i = 0; i < 20; i++) { while (PeekMessage(&m3, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m3); DispatchMessage(&m3); } Sleep(5); } }
+        BOOL (WINAPI *rC2S)(HWND, LPPOINT) = (BOOL (WINAPI *)(HWND, LPPOINT))GetProcAddress(GetModuleHandleA("user32.dll"), "ClientToScreen");
+        RECT rc; BOOL (WINAPI *rGCR)(HWND, LPRECT) = (BOOL (WINAPI *)(HWND, LPRECT))GetProcAddress(GetModuleHandleA("user32.dll"), "GetClientRect"); rGCR(hw, &rc);
+        POINT c = {rc.right / 2, rc.bottom / 2}; rC2S(hw, &c); SetCursorPos(c.x, c.y);
+        CHECK(ms->Acquire() == DI_OK, "mouse Acquire (synthetic)");
+        DIMOUSESTATE st; memset(&st, 0, sizeof st);
+        HRESULT h1 = ms->GetDeviceState(sizeof st, &st); LONG a1x = st.lX, a1y = st.lY;
+        HRESULT h2 = ms->GetDeviceState(sizeof st, &st); LONG a2x = st.lX, a2y = st.lY;
+        HRESULT h3 = ms->GetDeviceState(sizeof st, &st);
+        printf("      synthetic polls: (%ld,%ld) (%ld,%ld) (%ld,%ld) foreground=%d\n", a1x, a1y, a2x, a2y, st.lX, st.lY, GetForegroundWindow() == hw);
+        CHECK(h1 == DI_OK && h2 == DI_OK && h3 == DI_OK, "synthetic GetDeviceState succeeds");
+        CHECK(a1x == -3000 && a1y == -3000, "first poll drives the game cursor to the top-left corner");
+        CHECK(a2x >= 318 && a2x <= 322 && a2y >= 238 && a2y <= 242, "second poll moves it to the pointer (picture centre 320,240)");
+        CHECK(st.lX == 0 && st.lY == 0, "third poll: pointer did not move -> no motion");
+        // moving the pointer 20 screen pixels right at scale 2 = 10 game pixels
+        SetCursorPos(c.x + 20, c.y); ms->GetDeviceState(sizeof st, &st); CHECK(st.lX >= 9 && st.lX <= 11 && st.lY == 0, "20 real pixels at scale 2 = 10 game pixels of motion");
+        // buffered path
+        struct EV { DWORD ofs; DWORD data; DWORD ts; DWORD seq; } ev[8]; DWORD cnt = 8;
+        ms->Unacquire(); ms->Acquire(); cnt = 8; memset(ev, 0, sizeof ev); HRESULT hb = ms->GetDeviceData(sizeof(EV), (LPDIDEVICEOBJECTDATA)ev, &cnt, 0);
+        CHECK(hb == DI_OK && cnt == 2 && ev[0].ofs == 0 && (LONG)ev[0].data == -3000 && ev[1].ofs == 4, "buffered path: snap events X then Y (16-byte records)");
+        cnt = 8; hb = ms->GetDeviceData(sizeof(EV), (LPDIDEVICEOBJECTDATA)ev, &cnt, 0);
+        CHECK(hb == DI_OK && cnt == 2 && (LONG)ev[0].data >= 328 && (LONG)ev[0].data <= 332, "buffered path: second call positions the cursor");
+        ms->Release(); }
       if (di) di->Release(); }
 
     // draw a test pattern into the back buffer

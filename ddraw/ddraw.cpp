@@ -10,7 +10,8 @@
  *            fullscreen=0   1 = borderless window covering the monitor, picture letterboxed
  *            border=1       0 = no title bar in windowed mode
  *            filter=0       1 = smooth (bilinear-like) scaling, 0 = nearest neighbour
- *            cursor=1       1 = show the game's own cursor (the one it passes to SetCursor) over the window and never hide it; 0 = leave cursor handling to the game
+ *            synth_mouse=1  1 = give the game's DirectInput mouse data computed from the real pointer (correct at any scale); 0 = pass the real device through
+ *            cursor=0       1 = show the game's own cursor (the one it passes to SetCursor) over the window and never hide it; 0 = leave cursor handling to the game
  *            shared_mouse=1 1 = make the game's DirectInput mouse non-exclusive (keeps the Windows cursor and normal mouse handling)
  *            log=0          1 = write every call to ddraw_log.txt
  */
@@ -27,7 +28,7 @@
 #include <algorithm>
 
 /* ------------------------------------------------------------------ config + log */
-static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 1, mouse_shared = 1; } cfg;
+static struct { int scale = 1, fullscreen = 0, border = 1, filter = 0, log = 0, cursor = 0, mouse_shared = 1, synth_mouse = 1; } cfg;
 static HCURSOR g_gamecursor;
 static FILE *logf;
 static CRITICAL_SECTION cs;
@@ -51,8 +52,9 @@ static void load_cfg() {
     cfg.border = GetPrivateProfileIntA("ddraw", "border", 1, p);
     cfg.filter = GetPrivateProfileIntA("ddraw", "filter", 0, p);
     cfg.log = GetPrivateProfileIntA("ddraw", "log", 0, p);
-    cfg.cursor = GetPrivateProfileIntA("ddraw", "cursor", 1, p);
+    cfg.cursor = GetPrivateProfileIntA("ddraw", "cursor", 0, p);
     cfg.mouse_shared = GetPrivateProfileIntA("ddraw", "shared_mouse", 1, p);
+    cfg.synth_mouse = GetPrivateProfileIntA("ddraw", "synth_mouse", 1, p);
 }
 
 /* ------------------------------------------------------------------ pixel formats */
@@ -179,6 +181,32 @@ static BOOL WINAPI hk_ShowWindow(HWND h, int cmd) {
     return o_ShowWindow(h, cmd);
 }
 
+
+/* ---- synthetic DirectInput mouse: relative data computed from the real pointer, in game pixels ---- */
+static struct { int x = -1, y = -1, snap = 0; bool acquired = false; int wheel = 0; DWORD seq = 0; } M;
+static bool real_pointer_game(int *gx, int *gy) {   /* true if the pointer is over the picture; coordinates in game pixels */
+    if (!G.hwnd || !G.pw || GetForegroundWindow() != G.hwnd) return false;
+    POINT pt; if (!GetCursorPos(&pt)) return false;
+    (o_ScreenToClient ? o_ScreenToClient : ScreenToClient)(G.hwnd, &pt);
+    RECT d; int cw, ch; picture_rect(G.hwnd, &d, &cw, &ch); int dw = d.right - d.left, dh = d.bottom - d.top;
+    if (dw <= 0 || dh <= 0 || pt.x < d.left || pt.y < d.top || pt.x >= d.right || pt.y >= d.bottom) return false;
+    *gx = (pt.x - d.left) * G.pw / dw; *gy = (pt.y - d.top) * G.ph / dh; return true;
+}
+static bool btn_down(int i) {
+    bool swap = GetSystemMetrics(SM_SWAPBUTTON) != 0; int vk = i == 0 ? (swap ? VK_RBUTTON : VK_LBUTTON) : i == 1 ? (swap ? VK_LBUTTON : VK_RBUTTON) : VK_MBUTTON;
+    return (GetAsyncKeyState(vk) & 0x8000) != 0 && GetForegroundWindow() == G.hwnd;
+}
+/* One poll: returns the relative motion since the previous poll. After (re)acquire the game's own cursor is first driven into the
+ * top-left corner and then to the pointer, so both end up in the same place whatever starting position the game uses. */
+static void mouse_poll(int *dx, int *dy, bool commit) {
+    *dx = *dy = 0; int gx, gy; bool in = real_pointer_game(&gx, &gy);
+    int nx = M.x, ny = M.y;
+    if (M.snap == 0) { if (in) { *dx = -3000; *dy = -3000; if (commit) { M.snap = 1; M.x = -2; M.y = -2; } } return; }
+    if (M.snap == 1) { if (in) { *dx = gx; *dy = gy; if (commit) { M.snap = 2; M.x = gx; M.y = gy; } } return; }
+    if (in) { *dx = gx - M.x; *dy = gy - M.y; nx = gx; ny = gy; }
+    if (commit) { M.x = nx; M.y = ny; }
+}
+
 /* ---- DirectInput proxy: logs what the game does with the mouse, optionally makes it non-exclusive ---- */
 typedef HRESULT (WINAPI *PFN_DICreateA)(HINSTANCE, DWORD, LPDIRECTINPUTA *, LPUNKNOWN);
 static PFN_DICreateA o_DICreateA;
@@ -196,19 +224,41 @@ struct WDevice : IDirectInputDeviceA {
     HRESULT STDMETHODCALLTYPE SetProperty(REFGUID g, LPCDIPROPHEADER h) override {
         HRESULT hr = r->SetProperty(g, h); unsigned long id = (unsigned long)(ULONG_PTR)&g; unsigned long val = h && h->dwSize >= sizeof(DIPROPDWORD) ? ((const DIPROPDWORD *)h)->dwData : 0;
         LOG("DInput %s SetProperty(id=%lu%s value=%lu) -> 0x%08lx", mouse ? "mouse" : kbd ? "keyboard" : "device", id, id == 1 ? " BUFFERSIZE" : id == 2 ? " AXISMODE(0=abs,1=rel)" : "", val, (unsigned long)hr); return hr; }
-    HRESULT STDMETHODCALLTYPE Acquire() override { HRESULT hr = r->Acquire(); LOGU(0x9000000u ^ (unsigned)hr ^ (mouse ? 1u : 0), "DInput %s Acquire -> 0x%08lx (foreground=%p game window=%p)", mouse ? "mouse" : kbd ? "keyboard" : "device", (unsigned long)hr, (void *)GetForegroundWindow(), (void *)G.hwnd); return hr; }
-    HRESULT STDMETHODCALLTYPE Unacquire() override { LOGU(0xA000000u ^ (mouse ? 1u : 0), "DInput %s Unacquire", mouse ? "mouse" : kbd ? "keyboard" : "device"); return r->Unacquire(); }
+    HRESULT STDMETHODCALLTYPE Acquire() override { if (mouse && cfg.synth_mouse) { M.acquired = true; M.snap = 0; M.x = M.y = -1; M.wheel = 0; } HRESULT hr = r->Acquire(); if (mouse && cfg.synth_mouse) hr = DI_OK; LOGU(0x9000000u ^ (unsigned)hr ^ (mouse ? 1u : 0), "DInput %s Acquire -> 0x%08lx (foreground=%p game window=%p)", mouse ? "mouse" : kbd ? "keyboard" : "device", (unsigned long)hr, (void *)GetForegroundWindow(), (void *)G.hwnd); return hr; }
+    HRESULT STDMETHODCALLTYPE Unacquire() override { LOGU(0xA000000u ^ (mouse ? 1u : 0), "DInput %s Unacquire", mouse ? "mouse" : kbd ? "keyboard" : "device"); if (mouse && cfg.synth_mouse) { M.acquired = false; r->Unacquire(); return DI_OK; } return r->Unacquire(); }
     HRESULT STDMETHODCALLTYPE GetDeviceState(DWORD cb, LPVOID d) override {
+        if (mouse && cfg.synth_mouse) {
+            Guard g; if (!M.acquired) return DIERR_NOTACQUIRED;
+            memset(d, 0, cb); int dx, dy; mouse_poll(&dx, &dy, true);
+            if (cb >= 12) { LONG *v = (LONG *)d; v[0] = dx; v[1] = dy; v[2] = M.wheel; M.wheel = 0; }
+            for (int i = 0; i < 4 && 12 + i < (int)cb; i++) ((BYTE *)d)[12 + i] = btn_down(i) ? 0x80 : 0;
+            static int shown; if (cfg.log && shown < 25 && (dx || dy)) { shown++; LOG("synthetic mouse state: dx=%d dy=%d buttons=%02x%02x%02x", dx, dy, ((BYTE *)d)[12], ((BYTE *)d)[13], ((BYTE *)d)[14]); }
+            return DI_OK;
+        }
         HRESULT hr = r->GetDeviceState(cb, d);
         if (mouse && nstate < 12 && hr == DI_OK && cb >= 12) { DIMOUSESTATE *m = (DIMOUSESTATE *)d; if (m->lX || m->lY || m->rgbButtons[0] || nstate < 2) { nstate++; LOG("DInput mouse state: dx=%ld dy=%ld buttons=%02x%02x", m->lX, m->lY, m->rgbButtons[0], m->rgbButtons[1]); } }
         else if (mouse && hr != DI_OK) LOGU(0xB000000u ^ (unsigned)hr, "DInput mouse GetDeviceState -> 0x%08lx", (unsigned long)hr);
         return hr;
     }
+    bool pb[4] = {false, false, false, false};   /* last reported button states for synthetic events */
     HRESULT STDMETHODCALLTYPE GetDeviceData(DWORD cb, LPDIDEVICEOBJECTDATA d, LPDWORD n, DWORD f) override {
+        if (mouse && cfg.synth_mouse) {
+            Guard g; if (!M.acquired) { if (n) *n = 0; return DIERR_NOTACQUIRED; }
+            DWORD cap = n ? *n : 0, out = 0; bool peek = (f & DIGDD_PEEK) != 0; BYTE *base = (BYTE *)d;
+            auto put = [&](DWORD ofs, LONG data) { if (!d || out >= cap) return; BYTE *e = base + (size_t)out * cb; memset(e, 0, cb); *(DWORD *)e = ofs; *(LONG *)(e + 4) = data; *(DWORD *)(e + 8) = GetTickCount(); *(DWORD *)(e + 12) = ++M.seq; out++; };
+            int dx, dy; mouse_poll(&dx, &dy, !peek);
+            if (dx) put(0, dx);
+            if (dy) put(4, dy);
+            if (M.wheel) { put(8, M.wheel); if (!peek) M.wheel = 0; }
+            for (int i = 0; i < 4; i++) { bool nb = btn_down(i); if (nb != pb[i]) { put(12 + i, nb ? 0x80 : 0); if (!peek) pb[i] = nb; } }
+            if (n) *n = out;
+            if (cfg.log && out) { static int shown; if (shown < 30) { shown++; BYTE *e = base; LOG("synthetic mouse events: %lu (first: offset=%lu data=%ld)", (unsigned long)out, (unsigned long)*(DWORD *)e, (long)*(LONG *)(e + 4)); } }
+            return DI_OK;
+        }
         HRESULT hr = r->GetDeviceData(cb, d, n, f);
         if (mouse && cfg.log) {
             static unsigned long calls, events, shown; calls++; DWORD got = (n && hr == DI_OK) ? *n : 0; events += got;
-            if (got && d && shown < 40) { for (DWORD i = 0; i < got && i < 3 && shown < 40; i++, shown++) LOG("DInput mouse event: offset=%lu data=%ld (%s)", (unsigned long)d[i].dwOfs, (long)d[i].dwData, d[i].dwOfs == 0 ? "X" : d[i].dwOfs == 4 ? "Y" : d[i].dwOfs == 8 ? "wheel" : "button"); }
+            if (got && d && shown < 40) { for (DWORD i = 0; i < got && i < 3 && shown < 40; i++, shown++) { BYTE *e = (BYTE *)d + (size_t)i * cb; DWORD ofs = *(DWORD *)e; LOG("DInput mouse event: offset=%lu data=%ld (%s)", (unsigned long)ofs, (long)*(LONG *)(e + 4), ofs == 0 ? "X" : ofs == 4 ? "Y" : ofs == 8 ? "wheel" : "button"); } }
             if (calls == 1 || calls % 500 == 0) LOG("DInput mouse GetDeviceData: %lu calls, %lu events so far, hr=0x%08lx", calls, events, (unsigned long)hr);
         }
         return hr;
@@ -511,6 +561,7 @@ static LRESULT CALLBACK hook_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_GETMINMAXINFO: if (G.w && !cfg.fullscreen && g_winw > 0) { LRESULT r = old ? CallWindowProc(old, h, m, w, l) : DefWindowProc(h, m, w, l); MINMAXINFO *mm = (MINMAXINFO *)l; mm->ptMaxSize.x = g_winw; mm->ptMaxSize.y = g_winh; mm->ptMaxPosition.x = 0; mm->ptMaxPosition.y = 0; return r; } break;
     case WM_SIZE: if (w == SIZE_MAXIMIZED && G.w && !cfg.fullscreen) PostMessage(h, WM_APP + 0x5A, 0, 0); G.dirty = true; break;
     case WM_APP + 0x5A: if (G.w && !cfg.fullscreen) { apply_window(); return 0; } break;
+    case WM_MOUSEWHEEL: M.wheel += GET_WHEEL_DELTA_WPARAM(w); break;
     case WM_SETCURSOR: if (cfg.cursor && LOWORD(l) == HTCLIENT) { SetCursor(g_gamecursor ? g_gamecursor : LoadCursor(NULL, IDC_ARROW)); return TRUE; } break;
     case WM_PAINT: if (G.primary) { PAINTSTRUCT ps; BeginPaint(h, &ps); EndPaint(h, &ps); present("WM_PAINT"); return 0; } break;
     case WM_NCDESTROY: SetWindowLongPtr(h, GWLP_WNDPROC, (LONG_PTR)old); G.oldproc = 0; G.hwnd = 0; return CallWindowProc(old, h, m, w, l);

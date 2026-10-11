@@ -112,3 +112,12 @@ Game files are never committed (see .gitignore).
 - Likely the game's "Cnog" (no-go) cursor from Data\UI\cursors: the game thinks the pointer is invalid in the menu. Intro clicks arrive as WM_LBUTTONDOWN, so
   the menu must derive position another way (DInput buffered relative data, MSG.pt + ScreenToClient, ...). v6 logs: DInput property ids/values, buffered mouse events,
   ScreenToClient calls (screen -> client -> game coordinates), mapped WM_MOUSEMOVE values, and up to 200 small Blt/BltFast calls.
+
+### ddraw v7 (user test 6: DirectInput data in shared mode was bogus)
+- ddraw_log.txt: the game reads the mouse through DirectInput *buffered* data (BUFFERSIZE=32, 16-byte DIDEVICEOBJECTDATA records) and tracks its own cursor from relative deltas.
+  In shared mode the real device returned a constant ~307 on X every poll (and Y slowly drifting), pinning the game's cursor off-screen -> "no-go" cursor, menu dead.
+  (Intro clicks worked because they come through WM_LBUTTONDOWN, which we map.)
+- Fix: the DirectInput proxy now synthesises the mouse (ini synth_mouse=1): relative motion in game pixels from the real pointer (GetCursorPos + picture mapping),
+  buttons from GetAsyncKeyState, wheel from WM_MOUSEWHEEL; only while the game window is foreground and the pointer is over the picture. After each Acquire it first sends
+  (-3000,-3000) then the pointer position so the game's cursor lands exactly under the real pointer (works for both GetDeviceState and GetDeviceData; honours cbObjectData stride).
+- test_ddraw: 52 checks pass under Wine (snap sequence, 20 real px at scale 2 = 10 game px, buffered 16-byte records). cursor default is 0 again (honour ShowCursor/SetCursor).

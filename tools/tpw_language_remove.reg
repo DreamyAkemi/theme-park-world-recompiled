@@ -1,5 +1,0 @@
-Windows Registry Editor Version 5.00
-
-; Removes the wrongly-typed "Language" string value (the game reads it as a 4-byte DWORD).
-[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Bullfrog Productions Ltd\Theme Park World]
-"Language"=-

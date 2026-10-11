@@ -6,7 +6,7 @@
  * games with a software-renderer fallback use it.
  *
  * Options (ddraw.ini next to ddraw.dll):
- *   [ddraw]  scale=1        integer window scale of the display mode (windowed mode)
+ *   [ddraw]  scale=1        window scale of the display mode (windowed mode); 0 = largest window that fits the screen
  *            fullscreen=0   1 = borderless window covering the monitor, picture letterboxed
  *            border=1       0 = no title bar in windowed mode
  *            filter=0       1 = smooth (bilinear-like) scaling, 0 = nearest neighbour
@@ -34,11 +34,15 @@ static void LOG(const char *fmt, ...) {
     if (!logf) { char p[MAX_PATH]; GetModuleFileNameA(self_mod, p, MAX_PATH); char *s = strrchr(p, '\\'); if (s) *s = 0; strcat(p, "\\ddraw_log.txt"); logf = fopen(p, "w"); if (!logf) return; }
     va_list a; va_start(a, fmt); vfprintf(logf, fmt, a); va_end(a); fputc('\n', logf); fflush(logf);
 }
+static void LOGU(unsigned key, const char *fmt, ...) {
+    if (!cfg.log) return; static std::vector<unsigned> seen; for (unsigned k : seen) if (k == key) return; if (seen.size() > 2000) return; seen.push_back(key);
+    char b[512]; va_list a; va_start(a, fmt); vsnprintf(b, sizeof b, fmt, a); va_end(a); LOG("%s", b);
+}
 struct Guard { Guard() { EnterCriticalSection(&cs); } ~Guard() { LeaveCriticalSection(&cs); } };
 
 static void load_cfg() {
     char p[MAX_PATH]; GetModuleFileNameA(self_mod, p, MAX_PATH); char *s = strrchr(p, '\\'); if (s) *s = 0; strcat(p, "\\ddraw.ini");
-    cfg.scale = GetPrivateProfileIntA("ddraw", "scale", 1, p); if (cfg.scale < 1) cfg.scale = 1; if (cfg.scale > 8) cfg.scale = 8;
+    cfg.scale = GetPrivateProfileIntA("ddraw", "scale", 1, p); if (cfg.scale < 0) cfg.scale = 1; if (cfg.scale > 8) cfg.scale = 8;
     cfg.fullscreen = GetPrivateProfileIntA("ddraw", "fullscreen", 0, p);
     cfg.border = GetPrivateProfileIntA("ddraw", "border", 1, p);
     cfg.filter = GetPrivateProfileIntA("ddraw", "filter", 0, p);
@@ -101,11 +105,80 @@ struct Clipper : IDirectDrawClipper {
 static struct {
     HWND hwnd = 0; WNDPROC oldproc = 0; DWORD coop = 0;
     int w = 0, h = 0, bpp = 0;          /* current display mode (0 = never set) */
+    int pw = 0, ph = 0;                 /* primary surface size */
     Surface *primary = 0;
     bool dirty = false;
 } G;
 
 static void present();
+
+/* ---- host-process USER32 virtualisation: the game believes it owns a W x H screen at (0,0) ---- */
+typedef BOOL (WINAPI *PFN_GetClientRect)(HWND, LPRECT);
+typedef BOOL (WINAPI *PFN_GetWindowRect)(HWND, LPRECT);
+typedef BOOL (WINAPI *PFN_ScreenToClient)(HWND, LPPOINT);
+typedef BOOL (WINAPI *PFN_ClientToScreen)(HWND, LPPOINT);
+typedef int (WINAPI *PFN_GetSystemMetrics)(int);
+typedef BOOL (WINAPI *PFN_SetWindowPos)(HWND, HWND, int, int, int, int, UINT);
+typedef BOOL (WINAPI *PFN_MoveWindow)(HWND, int, int, int, int, BOOL);
+static PFN_GetClientRect o_GetClientRect; static PFN_GetWindowRect o_GetWindowRect; static PFN_ScreenToClient o_ScreenToClient;
+static PFN_ClientToScreen o_ClientToScreen; static PFN_GetSystemMetrics o_GetSystemMetrics; static PFN_SetWindowPos o_SetWindowPos; static PFN_MoveWindow o_MoveWindow;
+static bool hooks_installed;
+
+static bool virt_active(HWND h) { return h && h == G.hwnd && G.primary && G.w > 0; }
+/* real client rect -> aspect-fit rect of the picture inside it */
+static void picture_rect(HWND h, RECT *d, int *cw, int *ch) {
+    RECT cr = {0, 0, 0, 0}; (o_GetClientRect ? o_GetClientRect : GetClientRect)(h, &cr);
+    *cw = cr.right; *ch = cr.bottom; int sw = G.pw ? G.pw : G.w, sh = G.ph ? G.ph : G.h;
+    if (*cw <= 0 || *ch <= 0 || sw <= 0 || sh <= 0) { *d = cr; return; }
+    if ((long long)*cw * sh >= (long long)*ch * sw) { int dw = *ch * sw / sh; d->left = (*cw - dw) / 2; d->right = d->left + dw; d->top = 0; d->bottom = *ch; }
+    else { int dh = *cw * sh / sw; d->top = (*ch - dh) / 2; d->bottom = d->top + dh; d->left = 0; d->right = *cw; }
+}
+static BOOL WINAPI hk_GetClientRect(HWND h, LPRECT r) { if (virt_active(h) && r) { r->left = r->top = 0; r->right = G.pw; r->bottom = G.ph; return TRUE; } return o_GetClientRect(h, r); }
+static BOOL WINAPI hk_GetWindowRect(HWND h, LPRECT r) { if (virt_active(h) && r) { r->left = r->top = 0; r->right = G.pw; r->bottom = G.ph; return TRUE; } return o_GetWindowRect(h, r); }
+static BOOL WINAPI hk_ScreenToClient(HWND h, LPPOINT p) {
+    BOOL ok = o_ScreenToClient(h, p);
+    if (ok && p && virt_active(h)) { RECT d; int cw, ch; picture_rect(h, &d, &cw, &ch); int dw = d.right - d.left, dh = d.bottom - d.top; if (dw > 0 && dh > 0) { p->x = (p->x - d.left) * G.pw / dw; p->y = (p->y - d.top) * G.ph / dh; } }
+    return ok;
+}
+static BOOL WINAPI hk_ClientToScreen(HWND h, LPPOINT p) {
+    if (p && virt_active(h)) { RECT d; int cw, ch; picture_rect(h, &d, &cw, &ch); int dw = d.right - d.left, dh = d.bottom - d.top; if (dw > 0 && dh > 0) { p->x = p->x * dw / G.pw + d.left; p->y = p->y * dh / G.ph + d.top; } }
+    return o_ClientToScreen(h, p);
+}
+static int WINAPI hk_GetSystemMetrics(int n) { if (G.w > 0 && G.primary) { if (n == SM_CXSCREEN) return G.w; if (n == SM_CYSCREEN) return G.h; } return o_GetSystemMetrics(n); }
+static BOOL WINAPI hk_SetWindowPos(HWND h, HWND a, int x, int y, int cx, int cy, UINT f) { if (virt_active(h)) f |= SWP_NOMOVE | SWP_NOSIZE; return o_SetWindowPos(h, a, x, y, cx, cy, f); }
+static BOOL WINAPI hk_MoveWindow(HWND h, int x, int y, int w, int hh, BOOL r) { if (virt_active(h)) return TRUE; return o_MoveWindow(h, x, y, w, hh, r); }
+
+static void iat_hook(HMODULE mod, const char *dll, const char *fn, void *repl, void **orig) {
+    BYTE *b = (BYTE *)mod; IMAGE_DOS_HEADER *dh = (IMAGE_DOS_HEADER *)b; if (dh->e_magic != IMAGE_DOS_SIGNATURE) return;
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(b + dh->e_lfanew); IMAGE_DATA_DIRECTORY dd = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT]; if (!dd.VirtualAddress) return;
+    for (IMAGE_IMPORT_DESCRIPTOR *d = (IMAGE_IMPORT_DESCRIPTOR *)(b + dd.VirtualAddress); d->Name; d++) {
+        if (_stricmp((const char *)(b + d->Name), dll)) continue;
+        IMAGE_THUNK_DATA *oft = (IMAGE_THUNK_DATA *)(b + (d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk)), *ft = (IMAGE_THUNK_DATA *)(b + d->FirstThunk);
+        for (; oft->u1.AddressOfData; oft++, ft++) {
+            if (oft->u1.Ordinal & IMAGE_ORDINAL_FLAG) continue;
+            const char *name = (const char *)((IMAGE_IMPORT_BY_NAME *)(b + oft->u1.AddressOfData))->Name;
+            if (strcmp(name, fn)) continue;
+            DWORD old; VirtualProtect(&ft->u1.Function, sizeof(void *), PAGE_READWRITE, &old);
+            if (!*orig) *orig = (void *)ft->u1.Function; ft->u1.Function = (DWORD_PTR)repl; VirtualProtect(&ft->u1.Function, sizeof(void *), old, &old);
+            LOG("hooked %s!%s in host exe", dll, fn); return;
+        }
+    }
+}
+static void install_hooks() {
+    if (hooks_installed) return; hooks_installed = true;
+    HMODULE host = GetModuleHandle(NULL), u = GetModuleHandleA("user32.dll");
+    o_GetClientRect = (PFN_GetClientRect)GetProcAddress(u, "GetClientRect"); o_GetWindowRect = (PFN_GetWindowRect)GetProcAddress(u, "GetWindowRect");
+    o_ScreenToClient = (PFN_ScreenToClient)GetProcAddress(u, "ScreenToClient"); o_ClientToScreen = (PFN_ClientToScreen)GetProcAddress(u, "ClientToScreen");
+    o_GetSystemMetrics = (PFN_GetSystemMetrics)GetProcAddress(u, "GetSystemMetrics"); o_SetWindowPos = (PFN_SetWindowPos)GetProcAddress(u, "SetWindowPos"); o_MoveWindow = (PFN_MoveWindow)GetProcAddress(u, "MoveWindow");
+    void *tmp;
+    tmp = 0; iat_hook(host, "USER32.dll", "GetClientRect", (void *)hk_GetClientRect, &tmp);
+    tmp = 0; iat_hook(host, "USER32.dll", "GetWindowRect", (void *)hk_GetWindowRect, &tmp);
+    tmp = 0; iat_hook(host, "USER32.dll", "ScreenToClient", (void *)hk_ScreenToClient, &tmp);
+    tmp = 0; iat_hook(host, "USER32.dll", "ClientToScreen", (void *)hk_ClientToScreen, &tmp);
+    tmp = 0; iat_hook(host, "USER32.dll", "GetSystemMetrics", (void *)hk_GetSystemMetrics, &tmp);
+    tmp = 0; iat_hook(host, "USER32.dll", "SetWindowPos", (void *)hk_SetWindowPos, &tmp);
+    tmp = 0; iat_hook(host, "USER32.dll", "MoveWindow", (void *)hk_MoveWindow, &tmp);
+}
 
 struct Surface {
     LONG ref = 1;
@@ -260,6 +333,7 @@ static void dest_rect(int cw, int ch, int sw, int sh, RECT *r) {
 }
 
 static void present() {
+    Guard pg;
     Surface *p = G.primary;
     if (!p || !p->mem || !G.hwnd || !IsWindow(G.hwnd)) return;
     int W = p->w, H = p->h;
@@ -276,7 +350,7 @@ static void present() {
     }
     BITMAPINFO bi; memset(&bi, 0, sizeof bi);
     bi.bmiHeader.biSize = sizeof bi.bmiHeader; bi.bmiHeader.biWidth = W; bi.bmiHeader.biHeight = -H; bi.bmiHeader.biPlanes = 1; bi.bmiHeader.biBitCount = 32; bi.bmiHeader.biCompression = BI_RGB;
-    HDC dc = GetDC(G.hwnd); RECT cr; GetClientRect(G.hwnd, &cr);
+    HDC dc = GetDC(G.hwnd); RECT cr; (o_GetClientRect ? o_GetClientRect : GetClientRect)(G.hwnd, &cr);
     int cw = cr.right, ch = cr.bottom; g_client_w = cw; g_client_h = ch;
     RECT d; dest_rect(cw, ch, W, H, &d);
     if (d.left > 0 || d.top > 0) { HBRUSH bk = (HBRUSH)GetStockObject(BLACK_BRUSH); RECT a = {0, 0, cw, d.top}, b = {0, d.bottom, cw, ch}, c = {0, d.top, d.left, d.bottom}, e = {d.right, d.top, cw, d.bottom}; FillRect(dc, &a, bk); FillRect(dc, &b, bk); FillRect(dc, &c, bk); FillRect(dc, &e, bk); }
@@ -292,20 +366,28 @@ static void apply_window() {
     if (cfg.fullscreen) {
         MONITORINFO mi = {sizeof mi}; GetMonitorInfo(MonitorFromWindow(h, MONITOR_DEFAULTTOPRIMARY), &mi);
         SetWindowLongPtr(h, GWL_STYLE, (GetWindowLongPtr(h, GWL_STYLE) & ~(WS_CAPTION | WS_THICKFRAME | WS_BORDER)) | WS_POPUP | WS_VISIBLE);
-        SetWindowPos(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        (o_SetWindowPos ? o_SetWindowPos : SetWindowPos)(h, HWND_TOP, mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right - mi.rcMonitor.left, mi.rcMonitor.bottom - mi.rcMonitor.top, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+        SetForegroundWindow(h); SetFocus(h);
         return;
     }
     LONG_PTR st = GetWindowLongPtr(h, GWL_STYLE);
     st &= ~(WS_POPUP | WS_THICKFRAME | WS_MAXIMIZEBOX);
     st |= cfg.border ? (WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE) : (WS_POPUP | WS_VISIBLE);
     SetWindowLongPtr(h, GWL_STYLE, st);
-    RECT r = {0, 0, G.w * cfg.scale, G.h * cfg.scale}; AdjustWindowRect(&r, (DWORD)st, FALSE);
     MONITORINFO mi = {sizeof mi}; GetMonitorInfo(MonitorFromWindow(h, MONITOR_DEFAULTTOPRIMARY), &mi);
+    int cwid = G.w * (cfg.scale ? cfg.scale : 1), chei = G.h * (cfg.scale ? cfg.scale : 1);
+    if (cfg.scale == 0) {   /* largest window that fits the work area, aspect kept */
+        RECT fr = {0, 0, 0, 0}; AdjustWindowRect(&fr, (DWORD)st, FALSE);
+        int maxw = (mi.rcWork.right - mi.rcWork.left) - (fr.right - fr.left), maxh = (mi.rcWork.bottom - mi.rcWork.top) - (fr.bottom - fr.top);
+        cwid = maxw; chei = maxw * G.h / G.w; if (chei > maxh) { chei = maxh; cwid = maxh * G.w / G.h; }
+    }
+    RECT r = {0, 0, cwid, chei}; AdjustWindowRect(&r, (DWORD)st, FALSE);
     int ww = r.right - r.left, wh = r.bottom - r.top;
     int x = mi.rcWork.left + ((mi.rcWork.right - mi.rcWork.left) - ww) / 2, y = mi.rcWork.top + ((mi.rcWork.bottom - mi.rcWork.top) - wh) / 2;
     if (x < mi.rcWork.left) { x = mi.rcWork.left; }
     if (y < mi.rcWork.top) { y = mi.rcWork.top; }
-    SetWindowPos(h, HWND_NOTOPMOST, x, y, ww, wh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    (o_SetWindowPos ? o_SetWindowPos : SetWindowPos)(h, HWND_NOTOPMOST, x, y, ww, wh, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
+    SetForegroundWindow(h); SetFocus(h); SetActiveWindow(h);
 }
 
 static LRESULT CALLBACK hook_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -317,7 +399,7 @@ static LRESULT CALLBACK hook_proc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_NCDESTROY: SetWindowLongPtr(h, GWLP_WNDPROC, (LONG_PTR)old); G.oldproc = 0; G.hwnd = 0; return CallWindowProc(old, h, m, w, l);
     default:
         if (m >= WM_MOUSEFIRST && m <= WM_MOUSELAST && m != WM_MOUSEWHEEL && G.primary && g_client_w > 0) {
-            RECT d; dest_rect(g_client_w, g_client_h, G.primary->w, G.primary->h, &d);
+            RECT d; int cw2, ch2; picture_rect(h, &d, &cw2, &ch2);
             int dw = d.right - d.left, dh = d.bottom - d.top;
             if (dw > 0 && dh > 0 && (dw != G.primary->w || dh != G.primary->h || d.left || d.top)) {
                 int x = (short)LOWORD(l), y = (short)HIWORD(l);
@@ -396,8 +478,8 @@ HRESULT Surface::V3::Lock(LPRECT r, LPDDSURFACEDESC d, DWORD f, HANDLE e) {
     HRESULT hr = s->v7.Lock(r, &d2, f, e); if (hr == DD_OK) from2(&d2, d); return hr;
 }
 
-HRESULT Surface::V7::Lock(LPRECT r, LPDDSURFACEDESC2 d, DWORD, HANDLE) {
-    Guard l; if (!s->mem) return DDERR_SURFACELOST;
+HRESULT Surface::V7::Lock(LPRECT r, LPDDSURFACEDESC2 d, DWORD lf, HANDLE) {
+    Guard l; LOGU(0x4000000u ^ lf ^ (s->isprimary() ? 0x80000000u : 0), "Lock %s flags=0x%lx", s->isprimary() ? "primary" : "surface", lf); if (!s->mem) return DDERR_SURFACELOST;
     if (s->locked) return DDERR_SURFACEBUSY;
     s->locked = true;
     if (d) {
@@ -450,8 +532,8 @@ HRESULT Surface::V7::ReleaseDC(HDC) {
     s->release_gdi(); if (s->isprimary()) present(); return DD_OK;
 }
 
-HRESULT Surface::V7::Flip(LPDIRECTDRAWSURFACE7 target, DWORD) {
-    Guard l;
+HRESULT Surface::V7::Flip(LPDIRECTDRAWSURFACE7 target, DWORD fl) {
+    Guard l; LOGU(0x3000000u ^ fl, "Flip flags=0x%lx", fl);
     Surface *front = s; Surface *to = target ? ((V7 *)target)->s : 0;
     if (!to) { for (Surface *a : front->attached) if (a->caps & DDSCAPS_BACKBUFFER) { to = a; break; } }
     if (!to) return DDERR_NOTFLIPPABLE;
@@ -517,6 +599,8 @@ static HRESULT do_blit(Surface *dst, RECT *dr, Surface *src, RECT *sr, DWORD fla
 
 HRESULT Surface::V7::Blt(LPRECT d, LPDIRECTDRAWSURFACE7 src, LPRECT sr, DWORD f, LPDDBLTFX fx) {
     Guard l; Surface *ss = src ? ((V7 *)src)->s : 0;
+    LOGU(0x1000000u ^ f ^ (s->isprimary() ? 0x80000000u : 0), "Blt dst=%s flags=0x%lx src=%s%s", s->isprimary() ? "primary" : "surface", f, ss ? (ss->isprimary() ? "primary" : "surface") : "none", (f & DDBLT_COLORFILL) && fx ? "" : "");
+    if ((f & DDBLT_COLORFILL) && fx) LOGU(0x2000000u ^ fx->dwFillColor ^ (s->isprimary() ? 0x4000000u : 0), "  colorfill 0x%08lx on %s %dx%d", fx->dwFillColor, s->isprimary() ? "primary" : "surface", s->w, s->h);
     HRESULT hr = do_blit(s, d, ss, sr, f, fx, false, false);
     if (hr == DD_OK && s->isprimary()) present();
     return hr;
@@ -700,7 +784,7 @@ HRESULT DDraw::V7::CreateSurface(LPDDSURFACEDESC2 sd, LPDIRECTDRAWSURFACE7 *out,
             prev->attached.push_back(b); b->parent = prev; prev = b;   /* parent owns the reference (ref starts at 1) */
         }
         if (nb) s->caps |= DDSCAPS_FRONTBUFFER | DDSCAPS_FLIP | DDSCAPS_COMPLEX, s->desc.ddsCaps.dwCaps = s->caps;
-        s->dd = this->d; G.primary = s;
+        s->dd = this->d; G.primary = s; G.pw = w; G.ph = h;
         if (nb) { for (Surface *a : s->attached) a->dd = this->d; }
         memset(s->mem, 0, (size_t)s->pitch * s->h);
     } else {
@@ -728,6 +812,7 @@ HRESULT Surface::V7::GetDDInterface(LPVOID *o) { if (!s->dd) return DDERR_INVALI
 
 /* ------------------------------------------------------------------ exports */
 static HRESULT create_dd(void **out, REFIID iid) {
+    install_hooks();
     DDraw *d = new DDraw(); HRESULT hr = d->v7.QueryInterface(iid, out); d->v7.Release(); return hr;
 }
 extern "C" {

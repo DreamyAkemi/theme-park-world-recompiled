@@ -42,6 +42,18 @@ int main(int argc, char **argv) {
     DDSCAPS2 caps; memset(&caps, 0, sizeof caps); caps.dwCaps = DDSCAPS_BACKBUFFER;
     IDirectDrawSurface7 *back = NULL; CHECK(prim->GetAttachedSurface(&caps, &back) == DD_OK && back, "GetAttachedSurface(BACKBUFFER)");
 
+    // the game's view of the window must be the display mode, whatever the real window size is
+    RECT cr; GetClientRect(hw, &cr); CHECK(cr.right == 640 && cr.bottom == 480, "hooked GetClientRect reports 640x480");
+    CHECK(GetSystemMetrics(SM_CXSCREEN) == 640 && GetSystemMetrics(SM_CYSCREEN) == 480, "hooked GetSystemMetrics reports the display mode");
+    SetWindowPos(hw, NULL, 5, 5, 123, 77, SWP_NOZORDER); RECT rr; BOOL (WINAPI *realGCR)(HWND, LPRECT) = (BOOL (WINAPI *)(HWND, LPRECT))GetProcAddress(GetModuleHandleA("user32.dll"), "GetClientRect"); realGCR(hw, &rr);
+    CHECK(rr.right > 300, "game's SetWindowPos on the owned window is ignored");
+    {   // mouse: a real client point (200,300) must reach the game as (200,300)/scale
+        BOOL (WINAPI *realC2S)(HWND, LPPOINT) = (BOOL (WINAPI *)(HWND, LPPOINT))GetProcAddress(GetModuleHandleA("user32.dll"), "ClientToScreen");
+        int scale = rr.right / 640; POINT o = {0, 0}; realC2S(hw, &o); POINT p = {o.x + 200, o.y + 300}; ScreenToClient(hw, &p);
+        printf("      real client %ldx%ld (scale %d) -> ScreenToClient gives %ld,%ld\n", rr.right, rr.bottom, scale, p.x, p.y);
+        CHECK(scale >= 1 && p.x == 200 / scale && p.y == 300 / scale, "hooked ScreenToClient maps the mouse into game coordinates");
+    }
+
     // draw a test pattern into the back buffer
     DDSURFACEDESC2 ld; memset(&ld, 0, sizeof ld); ld.dwSize = sizeof ld;
     CHECK(back->Lock(NULL, &ld, DDLOCK_WAIT, NULL) == DD_OK, "Lock backbuffer");

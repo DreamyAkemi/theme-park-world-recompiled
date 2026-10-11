@@ -83,3 +83,10 @@ Game files are never committed (see .gitignore).
 - Presentation: primary -> 32-bit DIB -> StretchDIBits into the game's window (aspect-preserving), WM_PAINT/WM_ERASEBKGND and mouse coordinates
   handled by subclassing the window (mouse remap when scaled).
 - Verified under Wine with test_ddraw.exe (34 checks) and a screenshot of the presented frame. Not yet verified with the real game.
+
+### ddraw v2 (user test 1: window filled the screen, white flashes on the menu, mouse dead)
+- tp.exe imports GetClientRect/GetWindowRect/ScreenToClient/MoveWindow/SetWindowPos/GetSystemMetrics and DirectInputCreateA (no GetCursorPos):
+  it sizes its own window and derives mouse positions from window geometry. ddraw now patches the host exe's USER32 IAT entries so the game sees a W x H
+  screen at (0,0), ignores the game's SetWindowPos/MoveWindow on the window it owns, and maps ScreenToClient into game coordinates (scale/letterbox aware).
+- present() is now serialised (it used a shared static buffer from both the game thread and WM_PAINT); the window is brought to the foreground
+  after sizing (DirectInput needs foreground); calls are logged once per distinct flag combination in ddraw_log.txt.

@@ -25,3 +25,9 @@ Game files are never committed (see .gitignore).
 - With no value it falls back to the system locale (French on the user's PC) and exits when Data\Language\French is missing.
 - The user's copy has per-language folders only at the CD root (English/French/...), not under Data\Language;
   need the contents of those folders to know what the installer copies where.
+
+## Language check (code analysis)
+- WinMain (0x459290) first calls 0x45dec0 -> 0x45df30, which opens HKLM\...\Bullfrog Productions Ltd\Theme Park World and reads the
+  `Language` value as a DWORD. If it is missing, the game shows its error handler (0x4056b0) and returns from WinMain (silent exit).
+- The value itself is not used by that function; the language folder (e.g. Data\Language\French) is chosen from the Windows locale.
+- Workaround for non-installed copies: create the DWORD, and make Data\Language\<locale name> exist (e.g. copy English to French).

@@ -1,0 +1,6 @@
+Windows Registry Editor Version 5.00
+
+; The game only checks that this value exists as a DWORD (REG_DWORD); the language itself comes from
+; the Windows locale and the Data\Language\<name> folder. Value 9 = LANG_ENGLISH, used as a placeholder.
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Bullfrog Productions Ltd\Theme Park World]
+"Language"=dword:00000009

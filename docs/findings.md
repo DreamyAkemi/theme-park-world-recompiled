@@ -94,3 +94,10 @@ Game files are never committed (see .gitignore).
 ### ddraw v3 (user test 2: flashes fixed; window still screen-sized at scale=2 on their monitor; no mouse cursor visible)
 - Added: nested Lock counting (DirectDraw allows nested locks; the game's "Cursor failed on lock" path may rely on it), ShowCursor/SetCursor hooks with logging,
   `cursor=1` ini option (always show the OS cursor), mouse/activation message logging, window-geometry logging.
+
+### ddraw v4 (user test 3: window got maximized by the game; no cursor; clicks reached the game)
+- ddraw_log.txt showed WM_SIZE(SIZE_MAXIMIZED, ~2048 wide) right after our apply_window: ShowWindow(SW_SHOWMAXIMIZED) from the game (or the shortcut's Run=Maximized).
+  Now hooked: ShowWindow(max) -> normal, WM_GETMINMAXINFO limits maximize to our size, WM_SIZE(max) re-applies the window, apply_window restores a zoomed window first.
+- The game loads its cursors from Data\UI\cursors\*.tga, calls ShowCursor(0) and SetCursor(handle). It uses DirectInput (DirectInputCreateA): a proxy now logs
+  CreateDevice/SetDataFormat/SetCooperativeLevel/Acquire/GetDeviceState and makes the mouse non-exclusive (ini shared_mouse=1; exclusive mode hides the cursor).
+- Bug fixed during testing: the first WM_GETMINMAXINFO version capped window growth to the old size (test_ddraw caught it, 43 checks pass under Wine).

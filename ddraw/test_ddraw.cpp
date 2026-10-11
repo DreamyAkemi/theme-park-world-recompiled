@@ -2,8 +2,10 @@
 // Run from the folder containing ddraw.dll. Exit code 0 = all checks passed.
 #define WIN32_LEAN_AND_MEAN
 #define DIRECTDRAW_VERSION 0x0700
+#define DIRECTINPUT_VERSION 0x0500
 #include <windows.h>
 #include <ddraw.h>
+#include <dinput.h>
 #include <stdio.h>
 
 static int fails;
@@ -45,6 +47,7 @@ int main(int argc, char **argv) {
     // the game's view of the window must be the display mode, whatever the real window size is
     RECT cr; GetClientRect(hw, &cr); CHECK(cr.right == 640 && cr.bottom == 480, "hooked GetClientRect reports 640x480");
     CHECK(GetSystemMetrics(SM_CXSCREEN) == 640 && GetSystemMetrics(SM_CYSCREEN) == 480, "hooked GetSystemMetrics reports the display mode");
+    BOOL (WINAPI *realGCR0)(HWND, LPRECT) = (BOOL (WINAPI *)(HWND, LPRECT))GetProcAddress(GetModuleHandleA("user32.dll"), "GetClientRect"); { RECT b4; realGCR0(hw, &b4); printf("      real client before game SetWindowPos: %ldx%ld\n", b4.right, b4.bottom); }
     SetWindowPos(hw, NULL, 5, 5, 123, 77, SWP_NOZORDER); RECT rr; BOOL (WINAPI *realGCR)(HWND, LPRECT) = (BOOL (WINAPI *)(HWND, LPRECT))GetProcAddress(GetModuleHandleA("user32.dll"), "GetClientRect"); realGCR(hw, &rr);
     CHECK(rr.right > 300, "game's SetWindowPos on the owned window is ignored");
     {   // mouse: a real client point (200,300) must reach the game as (200,300)/scale
@@ -53,6 +56,15 @@ int main(int argc, char **argv) {
         printf("      real client %ldx%ld (scale %d) -> ScreenToClient gives %ld,%ld\n", rr.right, rr.bottom, scale, p.x, p.y);
         CHECK(scale >= 1 && p.x == 200 / scale && p.y == 300 / scale, "hooked ScreenToClient maps the mouse into game coordinates");
     }
+
+    // the game must not be able to maximize the window we own
+    ShowWindow(hw, SW_SHOWMAXIMIZED); { MSG m2; for (int i = 0; i < 20; i++) { while (PeekMessage(&m2, NULL, 0, 0, PM_REMOVE)) { TranslateMessage(&m2); DispatchMessage(&m2); } Sleep(5); } }
+    CHECK(!IsZoomed(hw), "ShowWindow(SW_SHOWMAXIMIZED) on the owned window does not maximize it");
+    // DirectInput mouse: exclusive request must work through the proxy (and be downgraded to shared)
+    { LPDIRECTINPUTA di = NULL; HRESULT hr = DirectInputCreateA(GetModuleHandle(NULL), 0x0500, &di, NULL); CHECK(hr == DI_OK && di, "DirectInputCreateA through the proxy");
+      LPDIRECTINPUTDEVICEA ms = NULL; if (di) hr = di->CreateDevice(GUID_SysMouse, &ms, NULL); CHECK(di && hr == DI_OK && ms, "CreateDevice(mouse)");
+      if (ms) { CHECK(ms->SetDataFormat(&c_dfDIMouse) == DI_OK, "mouse SetDataFormat"); hr = ms->SetCooperativeLevel(hw, DISCL_EXCLUSIVE | DISCL_FOREGROUND); printf("      mouse SetCooperativeLevel(exclusive) -> 0x%08lx\n", (unsigned long)hr); CHECK(hr == DI_OK, "mouse SetCooperativeLevel accepted"); ms->Release(); }
+      if (di) di->Release(); }
 
     // draw a test pattern into the back buffer
     DDSURFACEDESC2 ld; memset(&ld, 0, sizeof ld); ld.dwSize = sizeof ld;

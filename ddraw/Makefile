@@ -8,7 +8,7 @@ ddraw.dll: ddraw.cpp ddraw.def
 	$(MINGW_CXX) $(FLAGS) -shared -static -static-libgcc -static-libstdc++ -s -o $@ ddraw.cpp ddraw.def -ldxguid -luuid -lgdi32 -luser32 -Wl,--kill-at,--enable-stdcall-fixup
 
 test_ddraw.exe: test_ddraw.cpp
-	$(MINGW_CXX) $(FLAGS) -static -o $@ test_ddraw.cpp -ldxguid -luuid -lgdi32 -luser32
+	$(MINGW_CXX) $(FLAGS) -static -o $@ test_ddraw.cpp -ldinput -ldxguid -luuid -lgdi32 -luser32
 
 clean:
 	rm -f ddraw.dll test_ddraw.exe

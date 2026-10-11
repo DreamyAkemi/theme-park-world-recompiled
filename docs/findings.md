@@ -62,3 +62,10 @@ Game files are never committed (see .gitignore).
 - At the crash the world object (0x7dbd54 -> heap) has all handle words at +0x1da720 equal to 0 and the object table at 0x7dc088 is empty,
   i.e. World::Init (0x50bbc0) never ran. It is called from LoadLevel (0x407d70) only if 0x412f80 (level descriptor load: runs 0x421150 name lookups
   and 0x413770 per entry) returns non-zero. tp_debug v9 hooks these and logs arguments and return values.
+
+### Level load failure (tp_debug v9 log)
+- LoadLevel("data\levels\jungle") -> LevelDescLoad (0x412f80) -> ParseEntry (0x413770) returns 0 after scanning data\levels\jungle\Rides:
+  bouncy, bumper, coaster1, coaster3, gokarts, incagod, lookout, minecart .wad all load, then the scan fails/ends with 0 (World::Init skipped).
+- 0x413770 enumerates a directory (vtbl FindFirst/FindNext), skips non-matching names, builds an object per entry (0x41d740),
+  validates it (0x41eb80), registers it (0x41e7f0) and loads it (0x413a60); any failure returns 0.
+- tp_debug v10 logs each enumerated name and the return values of those four helpers.

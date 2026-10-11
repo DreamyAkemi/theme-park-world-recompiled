@@ -19,7 +19,7 @@ static void L(const char *fmt, ...) {
     fputs(b, stdout); if (lg) { fputs(b, lg); fflush(lg); }
 }
 
-enum { K_PLAIN, K_FILE, K_REG, K_RET };   /* what to do when the call returns */
+enum { K_PLAIN, K_FILE, K_REG, K_RET, K_FIND };   /* what to do when the call returns */
 typedef struct {
     const char *dll, *fn;       /* dll NULL -> fixed address inside tp.exe */
     int strarg, str2;           /* 1-based stack arg that is a char*, 0 none */
@@ -33,7 +33,8 @@ static Hook H[] = {
     {"kernelbase.dll", "ExitProcess", 0, 0, K_PLAIN},
     {"kernelbase.dll", "TerminateProcess", 0, 0, K_PLAIN},
     {"kernelbase.dll", "CreateFileA", 1, 0, K_FILE},
-    {"kernelbase.dll", "FindFirstFileA", 1, 0, K_FILE},
+    {"kernelbase.dll", "FindFirstFileA", 1, 0, K_FIND},
+    {"kernelbase.dll", "FindNextFileA", 0, 0, K_FIND},
     {"kernelbase.dll", "GetFileAttributesA", 1, 0, K_FILE},
     {"kernelbase.dll", "LoadLibraryA", 1, 0, K_PLAIN},
     {"kernelbase.dll", "GetDriveTypeA", 1, 0, K_PLAIN},
@@ -60,6 +61,10 @@ static Hook CODE_HOOKS[] = {
     {NULL, "ParseEntry@413770", 0, 0, K_RET, 0x413770},
     {NULL, "LookupName@421150", 1, 0, K_RET, 0x421150},
     {NULL, "WorldInit@50bbc0", 1, 0, K_RET, 0x50bbc0},
+    {NULL, "MakeRideObj@41d740", 0, 0, K_RET, 0x41d740},
+    {NULL, "Validate@41eb80", 0, 0, K_RET, 0x41eb80},
+    {NULL, "AddToSet@41e7f0", 0, 0, K_RET, 0x41e7f0},
+    {NULL, "LoadRide@413a60", 0, 0, K_RET, 0x413a60},
 };
 #define NAPI (sizeof H / sizeof H[0])
 #define NCODE (sizeof CODE_HOOKS / sizeof CODE_HOOKS[0])
@@ -185,6 +190,11 @@ int main(int argc, char **argv) {
                     if (pp->pdata) ReadProcessMemory(hp, (void *)(DWORD_PTR)pp->pdata, dat, cb < 63 ? cb : 63, &n);
                     char hex[200] = ""; for (DWORD i = 0; i < (cb < 24 ? cb : 24); i++) sprintf(hex + strlen(hex), "%02x ", dat[i]);
                     L("      -> result=%lu type=%lu cb=%lu data=[%s]\n", c.Eax, ty, cb, hex);
+                } else if (pp->kind == K_FIND) {
+                    if (c.Eax != 0xFFFFFFFFu && c.Eax != 0 && pp->pdata) {
+                        char nm[300] = {0}; ReadProcessMemory(hp, (void *)(DWORD_PTR)(pp->pdata + 44), nm, 259, &n);
+                        L("      -> %s: \"%s\"\n", pp->fn, nm);
+                    } else L("      -> %s: end/none (eax=0x%08lx)\n", pp->fn, c.Eax);
                 } else if (pp->kind == K_RET) {
                     L("      <- %s returned eax=0x%08lx\n", pp->fn, c.Eax);
                 }
@@ -217,6 +227,7 @@ int main(int argc, char **argv) {
                     p.addr = st[0]; p.kind = h->kind;
                     snprintf(p.name, sizeof p.name, "%s", s1); snprintf(p.fn, sizeof p.fn, "%s", h->fn);
                     if (h->kind == K_REG) { p.ptype = st[4]; p.pdata = st[5]; p.pcb = st[6]; }
+                    if (h->kind == K_FIND) p.pdata = !strcmp(h->fn, "FindNextFileA") ? st[2] : st[2];
                     post_push(&p);
                 }
                 disarm(h);

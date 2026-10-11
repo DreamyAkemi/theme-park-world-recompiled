@@ -1,0 +1,27 @@
+# Exports tp.exe imports from weachatr.dll. 'stub' = not exported by the Jan 2000 weachatr.dll; the shim answers it itself.
+fwd  ?Say@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@_NPAX@Z
+fwd  ?Tell@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@0_NPAX@Z
+stub ?ParkShout@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@_NPAX@Z
+fwd  ?EarmuffsOff@Chat@@QAEKPAX@Z
+fwd  ?EarmuffsOn@Chat@@QAEKPAX@Z
+fwd  ?UnIgnore@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@PAX@Z
+fwd  ?Blackmark@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@PAX@Z
+fwd  ?RemoveBuddy@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@PAX@Z
+fwd  ?Page@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@PAX@Z
+fwd  ?AFK@Chat@@QAEKPAX@Z
+fwd  ?Goto@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@PAX@Z
+fwd  ?Locate@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@PAX@Z
+fwd  ?AddBuddy@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@PAX@Z
+fwd  ?Ignore@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@PAX@Z
+stub ?CreatePark@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@00ABV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@3@HPAX@Z
+fwd  ?MovePlayer@Chat@@QAEKHHHPAX@Z
+fwd  ?NotAFK@Chat@@QAEKPAX@Z
+fwd  ?SetHearingRange@Chat@@QAEKIPAX@Z
+fwd  ?EnumPlayers@Chat@@QAEKPAX@Z
+fwd  ?CreatePlayer@Chat@@QAEKABV?$basic_string@GU?$char_traits@G@std@@V?$allocator@G@2@@std@@HH0PAX@Z
+fwd  ??1Chat@@QAE@XZ
+fwd  ??0Chat@@QAE@XZ
+fwd  ?Connect@Chat@@QAEHPADGP6GXHPAXAAV?$vector@VArgument@@V?$allocator@VArgument@@@std@@@std@@@Z0@Z
+stub ?ParkInfo@Chat@@QAEKABV?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@std@@PAX@Z
+fwd  ?Release@Chat@@QAEHXZ
+fwd  ?SetPlayerData@Chat@@QAEKHPAX@Z

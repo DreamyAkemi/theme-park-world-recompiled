@@ -1,0 +1,4 @@
+Windows Registry Editor Version 5.00
+
+; Deletes the game's registry key so the next launch behaves like a fresh first run.
+[-HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Bullfrog Productions Ltd\Theme Park World]
